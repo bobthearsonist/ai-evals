@@ -11,16 +11,20 @@ adapters.** No AI judge is used.
 
 ## Install
 
-This repository is private, so GitHub SSH access is required. Pin a commit or
-tag in each consumer, rather than following a moving branch:
+This repository is public; installation does not require GitHub credentials.
+Pin a commit or tag in each consumer, rather than following a moving branch:
 
 ```powershell
-npm install --save-dev git+ssh://git@github.com/bobthearsonist/ai-evals.git#v0.1.0
+npm install --save-dev git+https://github.com/bobthearsonist/ai-evals.git#v0.1.0
 ```
 
 The npm package is `@bobthearsonist/ai-evals`; the executable is `ai-evals`.
 It is installed from Git, not published to the npm registry. For development,
 clone the repository and invoke `node <checkout>\local\cli.mjs`.
+
+`tests/fixtures` contains only a synthetic `demo` greeting skill and cases used
+to test the engine. These fixtures are excluded from the installed package.
+Real skill suites stay in their respective consuming repositories.
 
 ## Repository-owned evaluations
 
