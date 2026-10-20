@@ -79,6 +79,30 @@ test('file_exists and tool_order checks compile', () => {
   assert.equal(readFileSync(join(out, 'canary.txt'), 'utf8'), r.canaryToken);
 });
 
+test('grader labels produce bounded portable filenames, not paths', () => {
+  const out = mkdtempSync(join(tmpdir(), 'cc-label-'));
+  try {
+    const skill = join(out, 'src');
+    fsSync.mkdirSync(skill);
+    fsSync.writeFileSync(join(skill, 'SKILL.md'), '---\nname: x\n---\n');
+    const labels = ['read/write', '..\\outside/label', 'a:b*?"<>|', 'x'.repeat(512), '///', 'same', 'same'];
+    const cases = [{ id: 'labels', prompt: 'p', shouldTrigger: true,
+      checks: labels.map((name) => ({ type: 'regex', name, pattern: 'answer' })) }];
+    const { pluginRoot } = compileClaudePlugin({ outDir: out, skillName: 'x', skillSourceDir: skill, cases });
+    const dir = join(pluginRoot, 'evals', 'labels', 'graders');
+    const names = fsSync.readdirSync(dir);
+    assert.equal(names.length, labels.length + 2);
+    for (const name of names) {
+      assert.match(name, /^\d+-[a-zA-Z0-9_-]+\.md$/);
+      assert.ok(name.length <= 70);
+      assert.ok(fsSync.statSync(join(dir, name)).isFile());
+    }
+    assert.match(readFileSync(join(dir, '01-read-write.md'), 'utf8'), /pattern: "answer"/);
+  } finally {
+    fsSync.rmSync(out, { recursive: true, force: true });
+  }
+});
+
 test('approval gate blocks without --approve-sessions', () => {
   const r = spawnSync(process.execPath, [cli, 'run', '--config', configPath, '--suite', 'demo', '--exe', process.execPath], { encoding: 'utf8' });
   assert.equal(r.status, 4);

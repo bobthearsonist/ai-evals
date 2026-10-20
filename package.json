@@ -1,6 +1,6 @@
 {
   "name": "@bobthearsonist/ai-evals",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local skill evaluations with native client adapters and deterministic checks",
   "license": "UNLICENSED",
   "private": true,

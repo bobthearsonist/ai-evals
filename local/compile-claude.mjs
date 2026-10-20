@@ -81,7 +81,8 @@ export function compileClaudePlugin({ outDir, skillName, skillSourceDir, cases, 
         if (k.flags) extra.flags = k.flags;
         if (k.type === 'not_regex') extra.match = 'not_contains';
       }
-      writeFileSync(join(dir, 'graders', `${String(i + 1).padStart(2, '0')}-${k.name ?? 'check'}.md`), graderMd({ type, extra }));
+      const label = String(k.name ?? 'check').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'check';
+      writeFileSync(join(dir, 'graders', `${String(i + 1).padStart(2, '0')}-${label}.md`), graderMd({ type, extra }));
     });
     writeFileSync(
       join(dir, 'graders', '90-skill-trigger.md'),
