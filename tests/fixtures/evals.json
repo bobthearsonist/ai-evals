@@ -1,0 +1,6 @@
+{
+  "skillsRoots": ["skills"],
+  "suites": {
+    "demo": { "skill": "demo" }
+  }
+}

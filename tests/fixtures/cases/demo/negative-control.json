@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "negative-control",
+  "prompt": "Say goodbye.",
+  "shouldTrigger": false,
+  "checks": [{ "type": "regex", "pattern": "goodbye" }],
+  "samples": { "pass": ["goodbye"], "fail": ["hello"] }
+}
