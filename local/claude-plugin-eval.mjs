@@ -40,6 +40,30 @@ export function isCompleteRun(run, { exists = existsSync, read = (p) => readFile
   return /"type":"result"/.test(read(run.tracePath));
 }
 
+const FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+const PERMISSION_DENIED = /denied because Claude Code is running in don.t ask mode/;
+
+// A fixture run whose file reads were refused and never once succeeded answered without its
+// inputs, so its score says nothing about the skill. A run that simply did not read is still scored.
+export function isBlockedFromInputs(run, { exists = existsSync, read = (p) => readFileSync(p, 'utf8') } = {}) {
+  if (!run?.tracePath || !exists(run.tracePath)) return false;
+  const fileCalls = new Set();
+  let denied = 0;
+  let succeeded = 0;
+  for (const line of read(run.tracePath).split('\n')) {
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    for (const part of ev?.message?.content ?? []) {
+      if (part?.type === 'tool_use' && FILE_TOOLS.has(part.name)) fileCalls.add(part.id);
+      if (part?.type !== 'tool_result' || !fileCalls.has(part.tool_use_id)) continue;
+      const text = Array.isArray(part.content) ? part.content.map((x) => x?.text ?? '').join(' ') : String(part.content ?? '');
+      if (PERMISSION_DENIED.test(text)) denied++;
+      else if (part.is_error !== true) succeeded++;
+    }
+  }
+  return denied > 0 && succeeded === 0;
+}
+
 // Copies each run's trace next to the results and drops the temp dir it came from.
 export function archiveTraces(aggregatePath, destDir) {
   const agg = JSON.parse(readFileSync(aggregatePath, 'utf8'));
@@ -60,10 +84,11 @@ export function archiveTraces(aggregatePath, destDir) {
   return n;
 }
 
-export function normalizeAggregate(agg) {
+export function normalizeAggregate(agg, { fixtureCaseIds = new Set() } = {}) {
   const cases = (agg.cases ?? []).map((c) => {
     const a = c.aggregates ?? {};
-    const valid = (runs) => (runs ?? []).filter((r) => isCompleteRun(r));
+    const usesFixtures = fixtureCaseIds.has(c.id ?? c.name);
+    const valid = (runs) => (runs ?? []).filter((r) => isCompleteRun(r) && !(usesFixtures && isBlockedFromInputs(r)));
     const mean = (runs) => (runs?.length ? runs.reduce((s, r) => s + (r.score ?? 0), 0) / runs.length : null);
     const sum = (...arms) => {
       const costs = arms.flatMap((r) => r ?? []).map((r) => r.costUsd).filter((x) => typeof x === 'number');
@@ -122,7 +147,8 @@ export function createClaudeRunner({ exe = 'claude' } = {}) {
         const auth = proc.status === 2 || /auth/i.test(`${proc.stderr}${proc.stdout}`);
         return makeRunResult({ ...base, status: auth ? CLIENT_STATUS.AUTH_FAILED : CLIENT_STATUS.ERROR, caveats: [...base.caveats, `no aggregate-result.json; exit ${proc.status}; ${String(proc.stderr).slice(0, 500)}`] });
       }
-      const n = normalizeAggregate(JSON.parse(readFileSync(aggPath, 'utf8')));
+      const fixtureCaseIds = new Set(suite.filter((c) => c.fixtures).map((c) => c.id));
+      const n = normalizeAggregate(JSON.parse(readFileSync(aggPath, 'utf8')), { fixtureCaseIds });
       archiveTraces(aggPath, join(outputDir, '..', 'traces'));
       const status = proc.status === 0 ? CLIENT_STATUS.PASSED : proc.status === 2 ? CLIENT_STATUS.PARTIAL : CLIENT_STATUS.BELOW_THRESHOLD;
       return makeRunResult({

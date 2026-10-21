@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { registerRunner, validateCase, gradeSample } from '../local/contract.mjs';
 import { compileClaudePlugin, loadSuite } from '../local/compile-claude.mjs';
-import { buildArgs, normalizeAggregate, plannedSessions, versionAtLeast, isCompleteRun } from '../local/claude-plugin-eval.mjs';
+import { buildArgs, normalizeAggregate, plannedSessions, versionAtLeast, isCompleteRun, isBlockedFromInputs } from '../local/claude-plugin-eval.mjs';
 import { registerStubs } from '../local/stubs.mjs';
 import { getRunner } from '../local/contract.mjs';
 
@@ -136,4 +136,31 @@ test('runs that never produced a result are excluded from scores', () => {
   assert.equal(isCompleteRun({ tracePath: 'bad' }, io), false);
   const n = normalizeAggregate({ cases: [{ name: 'a', arms: { with: [{ score: 1, tracePath: join(tmpdir(), 'nope-trace.jsonl') }, { score: 0 }], without: [{ score: 0.5 }] } }] });
   assert.equal(n.cases[0].invalidRuns, 0);
+});
+
+test('fixture runs refused every file read are excluded; other runs stay scored', () => {
+  const call = (id, name) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: {} }] } });
+  const reply = (id, text, isError) => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: isError }] } });
+  const denial = "Permission to use Read has been denied because Claude Code is running in don't ask mode.";
+  const done = '{"type":"result"}';
+  const traces = {
+    blocked: [call('r1', 'Read'), reply('r1', denial, true), call('g1', 'Glob'), reply('g1', denial, true), done].join('\n'),
+    recovered: [call('g1', 'Glob'), reply('g1', denial, true), call('r1', 'Read'), reply('r1', 'fixture text', false), done].join('\n'),
+    unread: done,
+  };
+  const io = { exists: () => true, read: (p) => traces[p] };
+  assert.equal(isBlockedFromInputs({ tracePath: 'blocked' }, io), true);
+  assert.equal(isBlockedFromInputs({ tracePath: 'recovered' }, io), false);
+  assert.equal(isBlockedFromInputs({ tracePath: 'unread' }, io), false);
+
+  const dir = mkdtempSync(join(tmpdir(), 'blocked-'));
+  for (const [k, v] of Object.entries(traces)) fsSync.writeFileSync(join(dir, `${k}.jsonl`), v);
+  const agg = { cases: [{ name: 'fx', arms: {
+    with: [{ score: 0, tracePath: join(dir, 'blocked.jsonl') }, { score: 1, tracePath: join(dir, 'recovered.jsonl') }],
+    without: [{ score: 0, tracePath: join(dir, 'unread.jsonl') }],
+  } }] };
+  const fixtureRun = normalizeAggregate(agg, { fixtureCaseIds: new Set(['fx']) }).cases[0];
+  assert.equal(fixtureRun.invalidRuns, 1);
+  assert.deepEqual(fixtureRun.withRuns, [1]);
+  assert.equal(normalizeAggregate(agg).cases[0].invalidRuns, 0);
 });
