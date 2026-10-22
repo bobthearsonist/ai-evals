@@ -8,7 +8,7 @@ export function slim(normalized, suite) {
   return {
     suite,
     client: normalized.client ?? 'claude',
-    transport: normalized.transport ?? 'native',
+    transport: normalized.transport ?? 'acp',
     model: normalized.model ?? null,
     clientVersion: normalized.clientVersion ?? null,
     at: new Date().toISOString(),
@@ -26,7 +26,7 @@ export function slim(normalized, suite) {
 export function diffRuns(prev, cur) {
   if (!prev) return [];
   if ((prev.client ?? 'claude') !== (cur.client ?? 'claude') || (prev.model ?? null) !== (cur.model ?? null)) return [];
-  if ((prev.transport ?? 'native') !== (cur.transport ?? 'native')) return [];
+  if (prev.transport !== 'acp' || cur.transport !== 'acp') return [];
   const before = new Map(prev.cases.map((c) => [c.id, c]));
   return cur.cases.map((c) => {
     const p = before.get(c.id);
@@ -56,13 +56,14 @@ export function recordRun(resultsDir, suite, normalized) {
 export function renderMarkdown(suites) {
   const lines = ['# Eval summary', '', '| Runner | Transport | Model | Suite | Case | With | Without | Delta | Verdict | Invalid |', '|---|---|---|---|---|---|---|---|---|---|'];
   for (const s of suites) {
-    for (const c of s.cases) lines.push(`| ${s.client ?? 'claude'} | ${s.transport ?? 'native'} | ${s.model ?? '-'} | ${s.suite} | ${c.id} | ${c.withScore ?? '-'} | ${c.withoutScore ?? '-'} | ${c.delta ?? '-'} | ${c.verdict} | ${c.invalidRuns} |`);
+    for (const c of s.cases) lines.push(`| ${s.client ?? 'claude'} | ${s.transport ?? 'acp'} | ${s.model ?? '-'} | ${s.suite} | ${c.id} | ${c.withScore ?? '-'} | ${c.withoutScore ?? '-'} | ${c.delta ?? '-'} | ${c.verdict} | ${c.invalidRuns} |`);
   }
   return `${lines.join('\n')}\n`;
 }
 
-export function historyRoot(resultsDir, { client = 'claude', model = null, transport = 'native' } = {}) {
-  if (transport === 'acp') resultsDir = join(resultsDir, 'acp');
+export function historyRoot(resultsDir, { client = 'claude', model = null, transport = 'acp' } = {}) {
+  if (transport !== 'acp') throw new Error('only ACP history is supported');
+  resultsDir = join(resultsDir, 'acp');
   if (client === 'claude' && model === null) return resultsDir;
   if (!/^[a-z][a-z0-9-]*$/.test(client)) throw new Error('invalid history client');
   const id = String(model ?? 'unspecified');

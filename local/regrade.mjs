@@ -4,7 +4,7 @@ import { gradeTranscript, verdict } from './grade.mjs';
 
 // Re-grades archived traces (<runDir>/traces/<case>/<arm>-<n>.jsonl) with the shared grader.
 // `parse` is the client's trace parser. Runs without a final result are excluded, as in live runs.
-export function regradeRun({ tracesDir, cases, parse, canaryToken, requireReceipt = false }) {
+export function regradeRun({ tracesDir, cases, parse, canaryToken, requireReceipt = true }) {
   const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
   return cases.map((c) => {
     const dir = join(tracesDir, c.id);

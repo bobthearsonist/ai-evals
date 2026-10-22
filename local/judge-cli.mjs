@@ -18,7 +18,7 @@ function loadRubric(path) {
   return rubric;
 }
 
-export function archivedJudgeAnswers({ runDir, parse, requireReceipt = false, caseIds }) {
+export function archivedJudgeAnswers({ runDir, parse, requireReceipt = true, caseIds }) {
   const tracesDir = join(runDir, 'traces');
   if (!existsSync(tracesDir)) throw new Error(`no archived traces: ${runDir}`);
   const answers = [];

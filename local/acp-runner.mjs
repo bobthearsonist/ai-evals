@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { executeAcp } from './acp.mjs';
 import { buildAcpLaunch } from './acp-profiles.mjs';
 import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities } from './contract.mjs';
-import { plannedSessions, prepareCopilot } from './copilot.mjs';
+import { plannedSessions, prepareWorkspace } from './workspace.mjs';
 import { gradeTranscript, verdict } from './grade.mjs';
 
 const mean = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
@@ -44,7 +44,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
     transport: 'acp',
     capabilities: { hermetic: false, skillTrace: false, toolEvidence: true, traceEvidence: true, fileSnapshot: false, usageObservable: false, hardLimits: false, implemented: true },
     plannedSessions,
-    prepare: prepareCopilot,
+    prepare: prepareWorkspace,
     parseTrace: parseAcpTrace,
     async preflight({ model, timeoutSeconds = 120 } = {}) {
       const problems = [];

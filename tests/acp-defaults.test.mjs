@@ -3,12 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createClaudeRunner } from '../local/claude-plugin-eval.mjs';
-import { createCopilotRunner } from '../local/copilot.mjs';
 import { gradeTranscript } from '../local/grade.mjs';
 import { diffRuns, historyRoot } from '../local/summary.mjs';
 import { regradeRun } from '../local/regrade.mjs';
-import { parseAcpTrace } from '../local/acp-runner.mjs';
+import { createAcpRunner, parseAcpTrace } from '../local/acp-runner.mjs';
 
 const cli = resolve(import.meta.dirname, '..', 'local', 'cli.mjs');
 const fake = resolve(import.meta.dirname, 'fixtures', 'fake-acp.mjs');
@@ -25,9 +23,9 @@ function setup(t) {
   return { root, profile };
 }
 
-test('both public adapter factories default to ACP and refuse unverified native isolation without spawning', async () => {
-  for (const create of [createClaudeRunner, createCopilotRunner]) {
-    const runner = create({ exe: 'must-not-be-launched' });
+test('both clients use ACP and refuse unverified native isolation without spawning', async () => {
+  for (const client of ['claude', 'copilot']) {
+    const runner = createAcpRunner({ client, exe: 'must-not-be-launched' });
     assert.equal(runner.transport, 'acp');
     assert.equal(runner.capabilities.skillTrace, false);
     const preflight = await runner.preflight({ model: 'synthetic-model' });
@@ -91,15 +89,32 @@ test('run-all forwards per-client custom ACP profiles and models without an expl
 });
 
 test('default spend-cap and legacy-only options cannot imply unsupported ACP guarantees', () => {
-  for (const option of ['--max-cost-usd', '--max-ai-credits']) {
-    const result = invoke(['preflight', option, '1']);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /ACP profiles do not enforce spend caps/);
+  for (const command of [['preflight'], ['preflight', '--runners', 'claude,copilot']]) {
+    for (const option of ['--max-cost-usd', '--max-ai-credits', '--copilot-home', '--transport']) {
+      const result = invoke([...command, option, '1']);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Unknown option/);
+    }
   }
   const legacy = invoke(['preflight', '--transport', 'native', '--exe', 'must-not-launch']);
   assert.equal(legacy.status, 1);
-  assert.match(legacy.stdout, /not runnable/);
-  assert.doesNotMatch(legacy.stdout, /ambient skills/);
+  assert.match(legacy.stderr, /Unknown option '--transport'/);
+});
+
+test('native archives are explicitly refused for both replay and judging', (t) => {
+  const { root } = setup(t);
+  mkdirSync(join(root, 'traces'));
+  const rubric = join(root, 'rubric.txt');
+  writeFileSync(rubric, 'Say hello.');
+  for (const transport of [undefined, 'native']) {
+    writeFileSync(join(root, 'normalized.json'), JSON.stringify({ client: 'claude', transport }));
+    for (const args of [['regrade', root], ['judge', root, '--client', 'claude',
+      '--model', 'synthetic-model', '--rubric', rubric, '--dry-run']]) {
+      const result = invoke(args);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /only ACP archives are supported/);
+    }
+  }
 });
 
 test('default dry-run plans remain offline and retain the existing approval gate contract', () => {
@@ -123,7 +138,7 @@ test('default factory captures a refused fixture fake subprocess as invalid and 
   writeFileSync(join(fixtures, 'input.txt'), 'fixture text');
   const c = { schemaVersion: 2, id: 'fixture', prompt: 'Read {{fixtures}}', fixtures: true, shouldTrigger: false,
     checks: [{ name: 'greeting', type: 'contains', value: 'hello' }] };
-  const runner = createClaudeRunner({ acpProfile: {
+  const runner = createAcpRunner({ client: 'claude', acpProfile: {
     command: process.execPath, args: [fake], env: { FAKE_ACP_MODE: 'blocked-inputs' },
   } });
   const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, fixturesDir: fixtures, cases: [c] });
@@ -150,8 +165,8 @@ test('fixture refusals are invalid ACP evidence; unread, recovered and nonfixtur
   assert.equal(gradeTranscript({ ...c, fixtures: false }, transcript).invalid, false);
 });
 
-test('ACP and legacy native histories never compare or overwrite one another', () => {
+test('non-ACP histories are neither accepted nor compared', () => {
   const identity = { client: 'claude', model: 'selected-model' };
-  assert.notEqual(historyRoot('results', identity), historyRoot('results', { ...identity, transport: 'acp' }));
+  assert.throws(() => historyRoot('results', { ...identity, transport: 'native' }), /only ACP history/);
   assert.deepEqual(diffRuns({ ...identity, cases: [] }, { ...identity, transport: 'acp', cases: [{ id: 'new' }] }), []);
 });

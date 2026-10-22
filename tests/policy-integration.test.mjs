@@ -5,19 +5,16 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from '../local/policy.mjs';
-import { compileClaudePlugin } from '../local/compile-claude.mjs';
-import { createLegacyClaudeRunner as createClaudeRunner, normalizeAggregate } from '../local/claude-plugin-eval.mjs';
-import { regradeRun } from '../local/regrade.mjs';
-import { parseClaudeTrace } from '../local/grade.mjs';
+import { createAcpRunner } from '../local/acp-runner.mjs';
 
 const definition = {
   schemaVersion: 2, id: 'greeting', prompt: 'Say hello.', shouldTrigger: false,
   checks: [{ type: 'contains', name: 'greeting', value: 'hello' }],
 };
-const trace = (answer) => [
-  JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: answer }] } }),
-  JSON.stringify({ type: 'result', result: answer }),
-].join('\n');
+const trace = (answer) => JSON.stringify({
+  type: 'ai-evals.acp', schemaVersion: 1,
+  transcript: { finalText: answer, toolCalls: [], raw: answer, complete: true },
+});
 const temporary = (fn) => {
   const root = mkdtempSync(join(tmpdir(), 'eval-policy-'));
   try { return fn(root); } finally { rmSync(root, { recursive: true, force: true }); }
@@ -44,30 +41,6 @@ test('legacy archives require deliberate current-policy replay', () => temporary
   assert.equal(replayPolicy(root, { currentCases: [definition], mode: 'current' }).sha256, policySnapshot([definition]).sha256);
 }));
 
-test('Claude captures v2 answers but only host and replay scores determine quality', () => temporary((root) => {
-  const skill = join(root, 'source');
-  mkdirSync(skill);
-  writeFileSync(join(skill, 'SKILL.md'), '---\nname: demo\n---\nSay hello.\n');
-  const { pluginRoot } = compileClaudePlugin({ outDir: root, skillName: 'demo', skillSourceDir: skill, cases: [definition] });
-  const grader = readFileSync(join(pluginRoot, 'evals', definition.id, 'graders', '01-capture-only-host-graded.md'), 'utf8');
-  assert.doesNotMatch(grader, /hello/);
-  const dir = join(root, 'traces', definition.id);
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, 'with-1.jsonl');
-  writeFileSync(path, trace('goodbye'));
-  const aggregate = { aggregates: { overallScore: 1 }, cases: [{
-    id: definition.id, arms: { with: [{ score: 1, tracePath: path }] },
-  }] };
-  const live = normalizeAggregate(aggregate, { suite: [definition] });
-  const replay = regradeRun({ tracesDir: join(root, 'traces'), cases: [definition], parse: parseClaudeTrace });
-  assert.equal(live.overallScore, 0.5);
-  assert.equal(live.cases[0].withScore, replay[0].withScore);
-  aggregate.cases[0].arms.with[0].tracePath = join(root, 'missing.jsonl');
-  const missing = normalizeAggregate(aggregate, { suite: [definition] });
-  assert.equal(missing.cases[0].withScore, null);
-  assert.equal(missing.cases[0].invalidRuns, 1);
-}));
-
 test('offline CLI validation and dry run never probe the native executable', () => {
   const cli = resolve(import.meta.dirname, '../local/cli.mjs');
   const config = resolve(import.meta.dirname, 'fixtures/evals.json');
@@ -82,10 +55,11 @@ test('offline CLI validation and dry run never probe the native executable', () 
 
 test('recorded CLI replay works after the source suite is gone and keeps original scores', () => temporary((root) => {
   archivePolicy(root, [definition], { plannedSessions: 1 });
-  writeFileSync(join(root, 'normalized.json'), JSON.stringify({ client: 'claude', overallScore: 1 }));
+  writeFileSync(join(root, 'normalized.json'), JSON.stringify({ client: 'claude', transport: 'acp', overallScore: 1 }));
   const dir = join(root, 'traces', definition.id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'with-1.jsonl'), trace('hello'));
+  writeFileSync(join(dir, 'with-1.jsonl.receipt.json'), JSON.stringify({ valid: true, exitCode: 0 }));
   const cli = resolve(import.meta.dirname, '../local/cli.mjs');
   const result = spawnSync(process.execPath, [cli, 'regrade', root], { encoding: 'utf8', cwd: root });
   assert.equal(result.status, 0, result.stderr);
@@ -143,8 +117,8 @@ test('unsupported v2 filesystem evidence is refused before any selected suite ru
 }));
 
 test('direct Claude runner API also rejects unsupported evidence before spawning', async () => {
-  const runner = createClaudeRunner({ exe: 'must-not-launch' });
+  const runner = createAcpRunner({ client: 'claude', exe: 'must-not-launch' });
   await assert.rejects(runner.run([{
     ...definition, checks: [{ name: 'result-file', type: 'file_exists', path: 'result.txt' }],
-  }], {}), /unsupported Claude case/);
+  }], { runs: 1, ablation: 'none' }), /unsupported ACP execution evidence/);
 });

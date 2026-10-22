@@ -55,7 +55,7 @@ test('judge CLI demands independent opt-in and leaves captured evidence untouche
 }));
 
 test('judge approval rejects before an execution seam can be invoked', () => temporary(async (root) => {
-  archive(root);
+  archive(root, { valid: true, exitCode: 0 });
   const rubricPath = join(root, 'rubric.txt');
   writeFileSync(rubricPath, 'Say hello.');
   let calls = 0;
@@ -67,12 +67,12 @@ test('judge approval rejects before an execution seam can be invoked', () => tem
 }));
 
 test('judge CLI dry-run counts eligible answers without starting a client', () => temporary((root) => {
-  const path = archive(root);
-  writeFileSync(path, [
-    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } }),
-    JSON.stringify({ type: 'result', result: 'hello' }),
-  ].join('\n'));
-  writeFileSync(join(root, 'normalized.json'), JSON.stringify({ client: 'claude' }));
+  const path = archive(root, { valid: true, exitCode: 0 });
+  writeFileSync(path, JSON.stringify({
+    type: 'ai-evals.acp', schemaVersion: 1,
+    transcript: { finalText: 'hello', toolCalls: [], raw: 'hello', complete: true },
+  }));
+  writeFileSync(join(root, 'normalized.json'), JSON.stringify({ client: 'claude', transport: 'acp' }));
   const rubric = join(root, 'rubric.txt');
   writeFileSync(rubric, 'Say hello.');
   const cli = resolve(import.meta.dirname, '../local/cli.mjs');
@@ -120,6 +120,7 @@ test('per-case JSON rubrics select semantic cases and preserve independent appro
   const other = join(root, 'traces', 'exact-format');
   mkdirSync(other);
   writeFileSync(join(other, 'with-1.jsonl'), JSON.stringify({ finalText: 'format', complete: true }));
+  writeFileSync(join(other, 'with-1.jsonl.receipt.json'), JSON.stringify({ valid: true, exitCode: 0 }));
   const rubricPath = join(root, 'rubrics.json');
   const rubric = 'Greet the visitor warmly; equivalent phrasings are acceptable.';
   writeFileSync(rubricPath, JSON.stringify({ greeting: rubric }));

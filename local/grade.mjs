@@ -5,27 +5,6 @@
 // transcript: { finalText, toolCalls: [{ name, input }], raw }
 import { evaluateCheck } from './assertions.mjs';
 
-export function parseClaudeTrace(text) {
-  const t = { finalText: '', toolCalls: [], raw: text, complete: false };
-  let lastAssistantText = '';
-  for (const line of String(text).split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let ev;
-    try { ev = JSON.parse(line); } catch { continue; }
-    if (ev.type === 'assistant') {
-      const parts = ev.message?.content ?? [];
-      const txt = parts.filter((p) => p.type === 'text').map((p) => p.text).join('');
-      if (txt) lastAssistantText = txt;
-      for (const p of parts) if (p.type === 'tool_use') t.toolCalls.push({ name: p.name, input: p.input ?? {} });
-    } else if (ev.type === 'result') {
-      t.complete = true;
-      if (typeof ev.result === 'string') t.finalText = ev.result;
-    }
-  }
-  if (!t.finalText) t.finalText = lastAssistantText;
-  return t;
-}
-
 function gradeCheck(k, transcript, version2) {
   if (!version2) {
     const name = k.name ?? k.pattern ?? k.type;
@@ -40,7 +19,7 @@ function gradeCheck(k, transcript, version2) {
       const after = idx(k.after);
       return { name, passed: before !== -1 && after !== -1 && before < after };
     }
-    // file_exists needs a workdir snapshot, which legacy transcripts do not carry.
+    // file_exists needs a workdir snapshot, which ACP transcripts do not carry.
     return { name, passed: null, skipped: true };
   }
   const result = evaluateCheck(k, transcript);

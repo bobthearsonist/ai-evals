@@ -4,8 +4,6 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { getRunner, validateCapabilities } from './contract.mjs';
 import { loadSuite } from './suite.mjs';
-import { createClaudeRunner, createLegacyClaudeRunner } from './claude-plugin-eval.mjs';
-import { createCopilotRunner, createLegacyCopilotRunner } from './copilot.mjs';
 import { registerStubs } from './stubs.mjs';
 import { recordRun } from './summary.mjs';
 import { regradeRun } from './regrade.mjs';
@@ -36,13 +34,10 @@ const { values, positionals } = parseArgs({
     runs: { type: 'string' },
     case: { type: 'string' },
     'approve-sessions': { type: 'string' },
-    'max-cost-usd': { type: 'string' },
     concurrency: { type: 'string', default: '1' },
     exe: { type: 'string' },
     model: { type: 'string' },
-    'max-ai-credits': { type: 'string' },
     'timeout-seconds': { type: 'string' },
-    'copilot-home': { type: 'string' },
     'skill-root': { type: 'string' },
     config: { type: 'string' },
     'cases-dir': { type: 'string' },
@@ -50,7 +45,6 @@ const { values, positionals } = parseArgs({
     'results-dir': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
     policy: { type: 'string' },
-    transport: { type: 'string', default: 'acp' },
     'acp-profile': { type: 'string' },
     rubric: { type: 'string' },
   },
@@ -62,20 +56,11 @@ const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => ex
 const command = positionals[0];
 if (values.policy !== undefined && command !== 'regrade') throw new Error('--policy is only supported by regrade');
 if (values.rubric !== undefined && command !== 'judge') throw new Error('--rubric is only supported by judge');
-createClaudeRunner();
-createCopilotRunner();
+createAcpRunner({ client: 'claude' });
+createAcpRunner({ client: 'copilot' });
 registerStubs();
-if (!['native', 'acp'].includes(values.transport)) throw new Error('--transport must be native or acp');
-if (values.transport === 'acp' && (values['max-cost-usd'] !== undefined || values['max-ai-credits'] !== undefined)) {
-  throw new Error('ACP profiles do not enforce spend caps; --max-cost-usd and --max-ai-credits are unsupported');
-}
-if (values['acp-profile'] && values.transport !== 'acp') throw new Error('--acp-profile requires --transport acp');
 if (values['acp-profile'] && values.exe) throw new Error('--acp-profile contains its command; do not combine with --exe');
-if (values.transport === 'acp' && values['copilot-home']) throw new Error('--copilot-home is a legacy native option; ACP requires an explicitly configured profile');
-if (values.transport === 'native') {
-  createLegacyClaudeRunner(values.exe ? { exe: values.exe } : {});
-  createLegacyCopilotRunner(values.exe ? { exe: values.exe } : {});
-} else if (['claude', 'copilot'].includes(values.client ?? 'claude')) {
+if (['claude', 'copilot'].includes(values.client ?? 'claude')) {
   createAcpRunner({
     client: values.client ?? 'claude', exe: values.exe,
     ...(values['acp-profile'] ? { acpProfile: JSON.parse(readFileSync(resolve(values['acp-profile']), 'utf8')) } : {}),
@@ -83,25 +68,19 @@ if (values.transport === 'native') {
 }
 let runner = getRunner(values.client ?? 'claude');
 if (command === 'judge') {
-  if (values.transport !== 'acp') throw new Error('judge requires ACP transport');
   if (positionals.length !== 2) throw new Error('judge requires one run directory');
   if (!values.client || !values.model) throw new Error('judge requires an explicit --client and --model');
-  if (values.exe || values.suite || values.runs || values['copilot-home'] || values['acp-profile']) {
-    throw new Error('judge does not support --exe, --suite, --runs, --copilot-home or --acp-profile; it reads archived answers only');
+  if (values.exe || values.suite || values.runs || values['acp-profile']) {
+    throw new Error('judge does not support --exe, --suite, --runs or --acp-profile; it reads archived answers only');
   }
-  if (values['max-cost-usd'] !== undefined || values['max-ai-credits'] !== undefined) throw new Error('judge ACP profiles do not enforce spend caps');
   const runDir = resolve(positionals[1]);
   const meta = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
-  if (meta.transport !== undefined && !['native', 'acp'].includes(meta.transport)) throw new Error(`unsupported archived transport: ${meta.transport}`);
-  if (meta.transport === 'acp') createAcpRunner({ client: meta.client });
-  else if (meta.client === 'copilot') createLegacyCopilotRunner();
-  else if (!meta.client || meta.client === 'claude') createLegacyClaudeRunner();
-  else throw new Error(`unsupported archived client: ${meta.client}`);
-  const archivedRunner = getRunner(meta.client ?? 'claude');
+  if (meta.transport !== 'acp') throw new Error('only ACP archives are supported');
+  const archivedRunner = createAcpRunner({ client: meta.client });
   const timeoutMs = Number(values['timeout-seconds'] ?? 120) * 1000;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) throw new Error('invalid judge timeout');
   const result = await judgeArchive({
-    runDir, parse: archivedRunner.parseTrace, requireReceipt: meta.client === 'copilot' || meta.transport === 'acp',
+    runDir, parse: archivedRunner.parseTrace, requireReceipt: true,
     caseIds: values.case ? [values.case] : undefined, rubricPath: values.rubric && resolve(values.rubric),
     model: values.model, client: values.client, approveSessions: Number(values['approve-sessions'] ?? 0), timeoutMs, dryRun: values['dry-run'],
   });
@@ -110,9 +89,7 @@ if (command === 'judge') {
 }
 const runnerOptions = {
   model: values.model,
-  maxAiCredits: Number(values['max-ai-credits'] ?? 30),
   timeoutSeconds: Number(values['timeout-seconds'] ?? 120),
-  copilotHome: values['copilot-home'],
 };
 
 if (!runner.capabilities.implemented && !['validate', 'regrade'].includes(command) && !values['dry-run']) {
@@ -121,7 +98,7 @@ if (!runner.capabilities.implemented && !['validate', 'regrade'].includes(comman
 }
 if (command === 'preflight') {
   const r = await runner.preflight(runnerOptions);
-  console.log(JSON.stringify({ transport: runner.transport ?? values.transport, ...r }, null, 2));
+  console.log(JSON.stringify({ transport: 'acp', ...r }, null, 2));
   process.exit(r.ok ? 0 : 1);
 }
 
@@ -135,19 +112,16 @@ if (command === 'regrade') {
   const runDir = resolve(positionals[1]);
   if (!existsSync(join(runDir, 'traces'))) throw new Error(`no archived traces: ${runDir}`);
   const meta = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
-  if (meta.transport !== undefined && !['native', 'acp'].includes(meta.transport)) throw new Error(`unsupported archived transport: ${meta.transport}`);
+  if (meta.transport !== 'acp') throw new Error('only ACP archives are supported');
   if (values.client && meta.client && values.client !== meta.client) throw new Error(`archived client is ${meta.client}, not ${values.client}`);
-  if (meta.transport === 'acp') createAcpRunner({ client: meta.client });
-  else if (meta.client === 'copilot') createLegacyCopilotRunner();
-  else createLegacyClaudeRunner();
-  runner = getRunner(meta.client ?? values.client ?? 'claude');
+  runner = createAcpRunner({ client: meta.client });
   let currentCases;
   if (values.policy === 'current') {
     if (!values.suite) throw new Error('--suite is required for --policy current');
     currentCases = loadSuite(join(config.casesDir, suiteSettings(config, values.suite).casesFolder));
   }
   const policy = replayPolicy(runDir, { currentCases, mode: values.policy ?? 'recorded' });
-  const out = regradeRun({ tracesDir: join(runDir, 'traces'), cases: policy.cases, parse: runner.parseTrace, canaryToken: meta.canaryToken, requireReceipt: runner.id === 'copilot' || meta.transport === 'acp' });
+  const out = regradeRun({ tracesDir: join(runDir, 'traces'), cases: policy.cases, parse: runner.parseTrace, canaryToken: meta.canaryToken, requireReceipt: true });
   const path = archiveReplay(runDir, policy, out);
   for (const c of out) console.log(`${c.id}: with=${c.withScore?.toFixed(2)} without=${c.withoutScore?.toFixed(2)} [${c.verdict}]${c.invalidRuns ? ' invalid=' + c.invalidRuns : ''}`);
   console.log(`policy=${policy.mode} sha256=${policy.sha256} assessment=${path}`);
@@ -184,11 +158,9 @@ const capabilityProblems = cases.filter((c) => !caseId || c.id === caseId)
 if (capabilityProblems.length) throw new Error(`unsupported execution evidence:\n- ${capabilityProblems.join('\n- ')}`);
 if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) < 1 || Number(values.concurrency) > 8) throw new Error('--concurrency must be an integer from 1 to 8');
 if (values['dry-run']) {
-  console.log(JSON.stringify({ suite: values.suite, client: runner.id, transport: values.transport, runs, ablation, plannedSessions: planned, policy: policySnapshot(cases.filter((c) => !caseId || c.id === caseId)) }, null, 2));
+  console.log(JSON.stringify({ suite: values.suite, client: runner.id, transport: 'acp', runs, ablation, plannedSessions: planned, policy: policySnapshot(cases.filter((c) => !caseId || c.id === caseId)) }, null, 2));
   process.exit(0);
 }
-if (runner.id === 'copilot' && values['max-cost-usd'] !== undefined) throw new Error('Copilot has no USD cost cap; use --max-ai-credits (soft, per session)');
-if (!Number.isFinite(Number(values['max-cost-usd'] ?? 5)) || Number(values['max-cost-usd'] ?? 5) <= 0) throw new Error('--max-cost-usd must be positive');
 if (!(approved >= planned && planned > 0)) {
   console.error(`approval gate: this run starts ${planned} live session(s); pass --approve-sessions ${planned} to proceed`);
   process.exit(4);
@@ -202,13 +174,13 @@ if (!pre.ok) {
 const ts = `${new Date().toISOString().replace(/[:.]/g, '-')}-${values.suite}-${runner.id}`;
 const outDir = join(config.outputDir, `${ts}-${command}`);
 mkdirSync(outDir, { recursive: true });
-const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: values.transport, model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null });
+const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null });
 const prepared = runner.prepare({
   outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, cases,
 });
 const { skillHash, canaryToken } = prepared;
-const result = await runner.run(cases, { ...prepared, ...runnerOptions, outputDir: join(outDir, 'eval-output'), runs, ablation, maxCostUsd: Number(values['max-cost-usd'] ?? 5), caseId, concurrency: Number(values.concurrency) });
-const normalized = { ...result, transport: values.transport, suite: values.suite, skillSha256: skillHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
+const result = await runner.run(cases, { ...prepared, ...runnerOptions, outputDir: join(outDir, 'eval-output'), runs, ablation, caseId, concurrency: Number(values.concurrency) });
+const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
 writeFileSync(join(outDir, 'normalized.json'), JSON.stringify(normalized, null, 2));
 if (!smoke && result.cases?.length) {
   const { diff } = recordRun(config.resultsDir, values.suite, normalized);

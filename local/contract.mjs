@@ -1,10 +1,10 @@
-// Client-neutral contract for local native eval runners.
+// Client-neutral contract for local ACP eval runners.
 // Adapters declare capabilities honestly; results are always labelled non-hermetic.
 
 import { validateV2CheckSchema, validateV2CaseSchema } from './schema.mjs';
 import { evaluateCheck } from './assertions.mjs';
 
-export const RESULT_LABEL = 'native-authenticated-non-hermetic';
+export const RESULT_LABEL = 'acp-non-hermetic';
 
 export const CLIENT_STATUS = Object.freeze({
   PASSED: 'passed',
@@ -18,7 +18,7 @@ export const CLIENT_STATUS = Object.freeze({
 export function makeRunResult(partial = {}) {
   return {
     client: 'unknown',
-    transport: 'native',
+    transport: 'acp',
     label: RESULT_LABEL,
     status: CLIENT_STATUS.ERROR,
     clientVersion: null,

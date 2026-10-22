@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { renderMarkdown } from './summary.mjs';
 import { loadSuite } from './suite.mjs';
-import { createClaudeRunner, createLegacyClaudeRunner } from './claude-plugin-eval.mjs';
-import { createCopilotRunner, createLegacyCopilotRunner } from './copilot.mjs';
+import { createAcpRunner } from './acp-runner.mjs';
 import { registerStubs } from './stubs.mjs';
 import { getRunner, validateCapabilities } from './contract.mjs';
 
@@ -28,10 +27,8 @@ const { values, positionals } = parseArgs({
     model: { type: 'string' }, 'copilot-model': { type: 'string' },
     'claude-model': { type: 'string' }, 'opencode-model': { type: 'string' },
     'claude-exe': { type: 'string' }, 'copilot-exe': { type: 'string' }, 'opencode-exe': { type: 'string' },
-    'max-cost-usd': { type: 'string' }, 'max-ai-credits': { type: 'string' },
-    'timeout-seconds': { type: 'string' }, 'copilot-home': { type: 'string' },
+    'timeout-seconds': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
-    transport: { type: 'string', default: 'acp' },
     'acp-profile': { type: 'string' },
     'claude-acp-profile': { type: 'string' }, 'copilot-acp-profile': { type: 'string' },
   },
@@ -46,19 +43,9 @@ if (ids.some((s) => !s) || new Set(ids).size !== ids.length) throw new Error('--
 if (ids.length > 1 && (values.exe || values.model || values['acp-profile'])) {
   throw new Error('multiple runners require client-specific options, not ambiguous --exe/--model/--acp-profile');
 }
-createClaudeRunner();
-createCopilotRunner();
+createAcpRunner({ client: 'claude' });
+createAcpRunner({ client: 'copilot' });
 registerStubs();
-if (!['native', 'acp'].includes(values.transport)) throw new Error('--transport must be native or acp');
-if (values.transport === 'acp' && (values['max-cost-usd'] !== undefined || values['max-ai-credits'] !== undefined)) {
-  throw new Error('ACP profiles do not enforce spend caps; spend cap options are unsupported');
-}
-if (values.transport === 'native') {
-  createLegacyClaudeRunner();
-  createLegacyCopilotRunner();
-}
-if (values.transport !== 'acp' && ['acp-profile', 'claude-acp-profile', 'copilot-acp-profile'].some((key) => values[key])) throw new Error('--acp-profile requires --transport acp');
-if (values.transport === 'acp' && values['copilot-home']) throw new Error('--copilot-home is a legacy native option');
 const runners = ids.map(getRunner);
 for (const r of runners) {
   if (!r.capabilities.implemented) {
@@ -68,20 +55,13 @@ for (const r of runners) {
 }
 const runnerArgs = (id) => {
   const opts = {
-    client: id, exe: values[`${id}-exe`] ?? values.exe, transport: values.transport,
+    client: id, exe: values[`${id}-exe`] ?? values.exe,
     model: values[`${id}-model`] ?? values.model,
     'acp-profile': values[`${id}-acp-profile`] ?? values['acp-profile'],
-    ...(id === 'copilot' ? {
-      model: values['copilot-model'] ?? values.model,
-      'max-ai-credits': values['max-ai-credits'],
-      'timeout-seconds': values['timeout-seconds'], 'copilot-home': values['copilot-home'],
-    } : { 'timeout-seconds': values['timeout-seconds'], 'max-cost-usd': values['max-cost-usd'] }),
+    'timeout-seconds': values['timeout-seconds'],
   };
   return Object.entries(opts).flatMap(([k, v]) => v === undefined ? [] : [`--${k}`, v]);
 };
-if (ids.length === 1 && ids[0] === 'copilot' && values['max-cost-usd'] !== undefined) {
-  throw new Error('Copilot has no USD cost cap; use --max-ai-credits (soft, per session)');
-}
 async function invoke(args) {
   return new Promise((done) => {
     const child = spawn(process.execPath, [join(here, 'cli.mjs'), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -122,7 +102,7 @@ if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) 
 const planned = (s, r) => r.plannedSessions({ caseCount: counts.get(s), runs, ablation: command === 'smoke' ? 'none' : 'with-without' });
 const total = suites.reduce((n, s) => n + runners.reduce((m, r) => m + planned(s, r), 0), 0);
 if (values['dry-run']) {
-  console.log(JSON.stringify({ suites, runners: ids, transport: values.transport, runs, plannedSessions: total }, null, 2));
+  console.log(JSON.stringify({ suites, runners: ids, transport: 'acp', runs, plannedSessions: total }, null, 2));
   process.exit(0);
 }
 if (command !== 'preflight' && Number(values['approve-sessions']) !== total) {
@@ -143,7 +123,7 @@ if (command === 'preflight') {
   process.exit(preflights.every((p) => p.ok) ? 0 : 1);
 }
 const failed = preflights.filter((p) => !p.ok);
-const results = failed.map((p) => ({ client: p.client, transport: values.transport, status: 'error', error: `preflight failed:\n- ${(p.problems ?? []).join('\n- ')}`, cases: [] }));
+const results = failed.map((p) => ({ client: p.client, transport: 'acp', status: 'error', error: `preflight failed:\n- ${(p.problems ?? []).join('\n- ')}`, cases: [] }));
 if (!failed.length) {
   // Suite/runner pairs are serial: --concurrency is a global ceiling, not multiplied by the suite count.
   jobs: for (const s of suites) for (const r of runners) {
@@ -166,7 +146,7 @@ if (!failed.length) {
   }
 }
 for (const r of results) {
-  console.log(`${r.suite ?? 'preflight'}: ${r.status} client=${r.client} transport=${r.transport ?? values.transport}${r.model ? ` model=${r.model}` : ''} score=${r.overallScore?.toFixed?.(2) ?? '-'} cost=${typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(2)}` : 'unknown'}`);
+  console.log(`${r.suite ?? 'preflight'}: ${r.status} client=${r.client} transport=acp${r.model ? ` model=${r.model}` : ''} score=${r.overallScore?.toFixed?.(2) ?? '-'} cost=${typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(2)}` : 'unknown'}`);
   if (r.error) console.error(r.error);
   for (const c of r.cases ?? []) console.log(`  ${c.id}: with=${c.withScore?.toFixed(2) ?? '-'} without=${c.withoutScore?.toFixed(2) ?? '-'} delta=${c.delta?.toFixed(2) ?? '-'} [${c.verdict}]${c.invalidRuns ? ` (${c.invalidRuns} invalid run(s) excluded)` : ''}`);
   for (const d of r.diffs ?? []) console.log(`vs previous ${r.client}/${r.suite} ${d.slice(5)}`);

@@ -5,10 +5,11 @@ cases, fixtures and run artifacts belong to the consuming repository, not this
 one. Extracted from `bobthearsonist/ai` at `f39fe21`; only synthetic test data is
 included here.
 
-Requires Node.js 22.12+. **Claude and Copilot both default to the common ACP
-transport**, including their public adapter factories, CLI and multi-runner.
+Requires Node.js 22.12+. **ACP is the only supported transport** for Claude
+and Copilot, including the library API, CLI and multi-runner.
 Native candidate ACP profiles currently refuse because ambient skill/MCP
-isolation has not been verified. There is no implicit SDK/plugin-eval fallback.
+isolation has not been verified. SDK/plugin-eval execution and replay code
+have been removed; there is no transport selector or fallback.
 ACP is not an isolation guarantee. Gherkin and compatibility JSON use the same
 deterministic policy; AI judging is a separate, explicitly approved assessment.
 
@@ -114,8 +115,8 @@ each JSON file holds one case. Version 1 remains compatible:
 ```
 
 Checks: `regex`, `not_regex`, `file_exists`, `tool_order`. Optional
-`"fixtures": true` copies the suite's `fixtures` directory into each generated
-case; use `{{fixtures}}` in the prompt to refer to it. Schema version 1 is
+`"fixtures": true` stages the suite's `fixtures` directory for each session;
+use `{{fixtures}}` in the prompt to refer to it. Schema version 1 is
 supported; omitted versions remain compatible.
 
 Version 2 adds `contains`, `not_contains`, `starts_with`, `max_length`
@@ -196,10 +197,7 @@ fixtures escaping the suite's `fixtures` directory fail offline.
 
 ## Results and deterministic regrading
 
-Both default adapters execute through the same ACP runner and shared host
-policy. Explicit legacy `--transport native` retains Claude plugin eval
-(v1 native graders, v2 capture-only host grading) and Copilot SDK sessions;
-neither route is selected automatically.
+Both clients execute through the same ACP runner and shared host policy.
 Model answers vary; deterministic evaluation
 means the same captured answer receives the same check outcomes, not that
 model output repeats. Judge assessments do not change these scores.
@@ -209,10 +207,11 @@ transport output and archived
 `traces/<case>/<arm>-<n>.jsonl` under the configured output directory. History
 and `latest.json` live under the results directory; `run-all` writes
 `summary.md` from the current invocation. ACP history lives under
-`<resultsDir>/acp/<client>/<model-slug-and-hash>/<suite>`.
-Legacy Claude history without a model stays in `<resultsDir>/<suite>`;
-legacy modeled histories use `<resultsDir>/<client>/<model-slug-and-hash>/<suite>`.
-Transports, clients and models never overwrite or compare one another's latest results.
+`<resultsDir>/acp/<client>/<model-slug-and-hash>/<suite>` (Claude with an
+unspecified model retains `<resultsDir>/acp/<suite>`).
+Clients and models never overwrite or compare one another's latest results.
+Historical non-ACP results are left untouched but cannot be replayed or judged
+by this engine.
 
 Case verdicts are `same` (absolute mean delta below 0.05), `lift` (all with
 scores exceed all without scores), `regression` (reverse), `inconclusive`
@@ -227,137 +226,20 @@ npx --no-install ai-evals regrade evals/.work/local-runs/<run> --config evals/ev
 Offline regrading uses the shared transcript grader and makes no model calls.
 It defaults to the archived policy, so later case edits cannot silently change
 the yardstick. Use `--policy current --suite my-suite` to deliberately apply
-today's definitions. Legacy runs without a snapshot require that explicit
+today's definitions. ACP runs without a snapshot require that explicit
 option. Every replay writes a separate, uniquely named
 `regrades/<id>.json` with the policy mode/hash, without rewriting the original
 result. Recorded replay does not need the original source suite.
-It supports text and tool-order checks; file-existence checks are marked
-skipped because archived traces do not include filesystem snapshots. Offline
-scores therefore need not match live scores for cases containing such checks.
+It supports text and tool-order checks. ACP cannot capture filesystem
+snapshots, so filesystem checks are refused before execution.
 
-Results retain the historical `native-authenticated-non-hermetic` compatibility
-label; this is not authentication attestation. The explicit `transport` field
-identifies ACP versus legacy native execution. Default ACP preflight does not
-authenticate or launch a subprocess. Legacy native routes reject API-key
-environment overrides; their historical cost estimates/caps are not hard quotas.
-
-## Legacy native adapters (explicit compatibility routes)
-
-Only `--transport native` selects Claude plugin eval or the experimental
-Copilot SDK adapter described below. Programmatic callers must explicitly
-import `createLegacyClaudeRunner` or `createLegacyCopilotRunner`; the existing
-`createClaudeRunner` and `createCopilotRunner` names now return ACP runners.
-Claude's legacy path requires Claude Code 2.1.269+ and an existing subscription
-login. Archived runs with missing `transport` retain their original native
-parsers, regardless of today's default or supplied candidate transport flags.
-
-### Copilot SDK adapter (experimental, legacy)
-
-The adapter uses `@github/copilot-sdk` 1.0.25 to create a session against the
-selected native Copilot CLI runtime. It does not inspect bundled code or
-managed authentication-state fields. Preflight checks public `--help` options
-and records the executable's version. Pin the executable you use; `--exe`
-selects it and `--no-auto-update` prevents an automatically downloaded version
-from being substituted. Windows requires a native executable, not an npm
-`.cmd`/`.bat` wrapper.
-
-The SDK session disables configuration discovery, supplies no configured MCP
-servers, disables the exact `github-mcp-server` name for that session, and
-includes no built-in skills. Only the staged skill directory and the `skill`,
-`view`, `glob`, and `rg` tools are enabled. Skill and MCP inventories are
-checked before and after the prompt, and runtime MCP events are audited.
-Explicitly inactive MCP statuses (`disabled`, `not_configured`, or `stopped`)
-are accepted; enabled servers, active or unknown statuses, and MCP tool-load
-events fail closed. The SDK's `disabledMcpServers` setting is session-scoped
-and exact-name matched; the disabled server is not started or authenticated.
-These checks are configuration controls, not an OS sandbox or authentication
-boundary.
-
-One bounded `git-commit-style` smoke on 2026-10-22 using `gpt-6.1-sol` completed
-with a valid receipt and captured usage. The staged skill was loaded and
-invoked; runtime explicitly reported `github-mcp-server` disabled, no MCP
-tools loaded, and empty pre/post SDK MCP inventories. Offline regrading
-reproduced its score of 0.75. This is a valid, audited end-to-end smoke, but
-not a case-level pass: the `header-under-72` check failed, leaving the result
-below threshold. It does not measure skill lift or establish acceptance for
-other CLI builds. A separate 2026-10-21 CLI-path smoke did observe active MCP
-tools and a built-in-skill mismatch; that earlier run remains invalid and
-unscored, and is not evidence about the corrected SDK session configuration.
-No model call is made by `preflight` or `regrade`.
-
-Replace `MODEL_ID` with an explicit model supported by your subscription;
-`auto` is intentionally rejected:
-
-```powershell
-npx --no-install ai-evals preflight --transport native --client copilot --model MODEL_ID
-npx --no-install ai-evals smoke --transport native --config evals/evals.json --suite my-suite --client copilot --model MODEL_ID --approve-sessions 1
-npx --no-install ai-evals run --transport native --config evals/evals.json --suite my-suite --case positive --client copilot --model MODEL_ID --runs 1 --max-ai-credits 30 --timeout-seconds 120 --approve-sessions 2
-```
-
-`--max-ai-credits` defaults to 30, the CLI's minimum, **per session**. It is a
-post-call soft limit: a single call can exceed it. It is not a suite-wide cap
-or a USD cap. Copilot rejects `--max-cost-usd`, reports unknown USD cost as
-`null`, and archives the CLI's usage JSON without converting units or prices.
-The parent enforces `--timeout-seconds` (default 120) and terminates the owned
-process tree on timeout or interruption. `--concurrency` bounds sessions in
-flight (1-8); each case, arm and repetition gets a fresh process and workspace.
-The runner does not retry failed sessions and stops scheduling after a failure;
-already-running sessions may finish. `run-all --runners copilot` is supported,
-subject to the same live-acceptance limitation.
-
-By default the runner creates and removes a fresh configuration home. It never
-copies credentials or injects tokens. If normal credential-store login is not
-available there, provide `--copilot-home PATH` pointing to a **dedicated** home
-you authenticated using the CLI's normal login flow. Do not point it at your
-everyday Copilot home. The adapter does not edit or delete a supplied home and
-rejects its settings, hooks, extensions, installed plugins, MCP/LSP servers,
-providers, agents and personal skills. Existing token/BYOK environment overrides
-are rejected. Authentication failure is reported, not replaced by API billing.
-
-Only the with-skill workspace receives the unchanged skill snapshot under
-`.github/skills/<name>`. Fixtures are copied separately; grader definitions and
-canaries stay outside the workspace. Before every prompt, `copilot skill list
---json` must show exactly that enabled skill at its staged path, or no enabled
-skills for the without arm. Unexpected personal, ancestor, plugin or built-in
-skills cause a clear failure. In disposable generated homes only, built-in
-skills are disabled through the public `skill disable` command and the listing
-is checked again; supplied homes are never modified. Runtime discovery must
-independently match the expected skill set. Clean configuration does not guarantee clean
-skill discovery: `COPILOT_HOME` does not suppress every discovery location.
-An explicit dedicated home must remain free of customizations during a run.
-
-Prompts disable custom instructions, built-in MCP servers and user questions.
-Available tools are restricted to `skill`, `view`, `glob` and `rg`, with
-read/skill permissions only; no shell, writes, fleet or subagent tool is enabled.
-These controls are **not an OS sandbox or an authentication boundary**. Runs
-retain the `native-authenticated-non-hermetic` label.
-
-Raw JSONL is archived unchanged in `traces/<case>/<arm>-<n>.jsonl`. Sidecar
-`.receipt.json` files record exit/timeout validity and usage; stderr and skill
-discovery audits live in `eval-output`. Scratch workspaces and generated homes
-are removed, not archived. Preserve receipts alongside traces for regrading.
-Copilot regrading selects the archived client automatically and requires valid
-receipts, so a failed process with an apparently complete trace cannot become
-a successful offline grade.
-
-The SDK session worker and session configuration are in
-`local/copilot-sdk.mjs`; the compatibility boundary is in `local/copilot.mjs`: root
-`assistant.message`, `skill.invoked`, matched successful `tool.execution_complete`
-events, `tool.execution_start`, `session.skills_loaded`, `session.idle`, the CLI's
-top-level `result` envelope, error and abort events. Unknown event types are retained and ignored; malformed
-events or missing root completion invalidate the run. Mentioning a skill or
-requesting its tool is not invocation evidence. `view`/`glob`/`rg` map to the
-shared `Read`/`Glob`/`Grep` tool-order names. `file_exists` cases are rejected
-before live execution in this first version, rather than silently skipped.
-
-Public interfaces: [programmatic CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference),
-[configuration directory](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference),
-and [SDK session-event types](https://github.com/github/copilot-sdk/blob/main/nodejs/src/generated/session-events.ts).
+Results use the `acp-non-hermetic` label; this is not authentication attestation.
+ACP preflight does not authenticate or launch a subprocess.
 
 ## Common ACP transport and separate AI assessments
 
 `--client claude|copilot --model MODEL_ID` selects the shared official
-stable-v1 ACP client by default; `--transport acp` is redundant. It records
+stable-v1 ACP client. There is no `--transport` option. It records
 messages, tool events, completion and observed usage,
 denies permission requests by default, and stops on errors/timeouts without
 retries. Missing usage/cost is `null`, not zero. ACP does not provide an OS
@@ -369,7 +251,7 @@ Offline fake-server success is not native-runtime acceptance.
 The built-in **candidate** profiles for Claude, Copilot and OpenCode currently
 all refuse: ambient skill/MCP isolation has not been verified for those ACP
 launches. An `--exe` override does not bypass this refusal. Both adapter
-layers have switched to ACP; this refusal is the default result until native
+clients use only ACP; this refusal remains until native
 candidate isolation is verified. Historical SDK smoke acceptance is not ACP
 acceptance. No login, API billing substitution or fallback is attempted.
 
@@ -446,9 +328,10 @@ Missing executables, version mismatches and unconfirmed models fail closed.
 
 `local/contract.mjs` defines the neutral cases, runner registry, capabilities
 and results. Adapters provide `prepare`, `parseTrace`, `preflight`,
-`plannedSessions` and `run`. Both default factories delegate to
-`local/acp-runner.mjs`; `local/acp-profiles.mjs` owns launch/isolation validation
-and `local/acp.mjs` owns the protocol. Legacy Claude alone compiles a plugin.
+`plannedSessions` and `run`. Use `createAcpRunner({ client: 'claude' })` or
+`createAcpRunner({ client: 'copilot' })` from `local/acp-runner.mjs`.
+`local/acp-profiles.mjs` owns launch/isolation validation
+and `local/acp.mjs` owns the protocol. `local/workspace.mjs` stages shared inputs.
 `grade.mjs`, `regrade.mjs` and
 `summary.mjs` handle deterministic offline checks and reporting.
 
@@ -456,7 +339,7 @@ Library helpers are available through subpaths, for example:
 
 ```js
 import { validateCase, gradeSample } from '@bobthearsonist/ai-evals/contract';
-import { loadSuite } from '@bobthearsonist/ai-evals/compile-claude';
+import { loadSuite } from '@bobthearsonist/ai-evals/suite';
 ```
 
 ## Development
@@ -467,6 +350,6 @@ npm pack --dry-run
 ```
 
 Tests and CI use synthetic fixtures and never start live model sessions.
-The ACP SDK and legacy Copilot SDK dependencies are installed with the package;
-no build step is needed. Fake ACP subprocess tests cover both default CLI
+The ACP SDK is installed with the package; no build step is needed.
+Fake ACP subprocess tests cover both CLI
 clients and multi-runner forwarding without contacting any model.
