@@ -1,0 +1,5 @@
+{
+  "caseId": "explicit-positive",
+  "pass": ["refactor: rename getUser to fetchUser", "refactor(users): rename getUser and update callers"],
+  "fail": ["Renamed getUser to fetchUser", "refactor: Rename getUser to fetchUser", "banana: rename getUser to fetchUser"]
+}

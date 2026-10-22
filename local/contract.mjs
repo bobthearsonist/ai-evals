@@ -1,6 +1,9 @@
 // Client-neutral contract for local native eval runners.
 // Adapters declare capabilities honestly; results are always labelled non-hermetic.
 
+import { validateV2CheckSchema, validateV2CaseSchema } from './schema.mjs';
+import { evaluateCheck } from './assertions.mjs';
+
 export const RESULT_LABEL = 'native-authenticated-non-hermetic';
 
 export const CLIENT_STATUS = Object.freeze({
@@ -15,6 +18,7 @@ export const CLIENT_STATUS = Object.freeze({
 export function makeRunResult(partial = {}) {
   return {
     client: 'unknown',
+    transport: 'native',
     label: RESULT_LABEL,
     status: CLIENT_STATUS.ERROR,
     clientVersion: null,
@@ -58,7 +62,8 @@ export function listRunners() {
 export function validateCase(c) {
   const problems = [];
   if (!c || typeof c !== 'object') return ['case must be an object'];
-  if (c.schemaVersion !== undefined && c.schemaVersion !== 1) problems.push(`unsupported schemaVersion ${c.schemaVersion}; this harness reads 1`);
+  if (c.schemaVersion === 2) return validateV2Case(c);
+  if (c.schemaVersion !== undefined && c.schemaVersion !== 1) problems.push(`unsupported schemaVersion ${c.schemaVersion}; this harness reads 1 or 2`);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(c.id ?? '')) problems.push('id must be kebab-case');
   if (typeof c.prompt !== 'string' || !c.prompt.trim()) problems.push('prompt required');
   if (typeof c.shouldTrigger !== 'boolean') problems.push('shouldTrigger must be boolean');
@@ -77,9 +82,59 @@ export function validateCase(c) {
   return problems;
 }
 
+// Version 2 is deliberately stricter than the legacy v1 contract. Keep the v1
+// checks above unchanged so archived suites retain their historical validation.
+export function validateV2Case(c) {
+  const problems = validateV2CaseSchema(c);
+  if (!Array.isArray(c?.checks)) return problems;
+  const names = new Set();
+  for (const [index, check] of c.checks.entries()) {
+    for (const problem of validateCheck(check)) problems.push(`checks[${index}]: ${problem}`);
+    if (typeof check?.name === 'string') {
+      if (names.has(check.name)) problems.push(`checks[${index}]: duplicate check name "${check.name}"`);
+      names.add(check.name);
+    }
+  }
+  return problems;
+}
+
+export function validateCheck(check) {
+  return validateV2CheckSchema(check);
+}
+
+// This is a preflight policy helper. A runner should call it before scheduling
+// paid sessions, rather than allowing a transcript grader to skip unavailable evidence.
+export function validateCapabilities(c, capabilities = {}) {
+  const problems = [];
+  if (c?.schemaVersion !== 2) return problems;
+  for (const [index, check] of (Array.isArray(c.checks) ? c.checks : []).entries()) {
+    if (check?.type === 'file_exists' && capabilities.fileSnapshot !== true) {
+      problems.push(`checks[${index}] (${check.name}): file_exists requires fileSnapshot capability`);
+    }
+    if (check?.type === 'tool_order' && capabilities.toolEvidence !== true) {
+      problems.push(`checks[${index}] (${check.name}): tool_order requires toolEvidence capability`);
+    }
+    if (check?.target === 'trace' && capabilities.traceEvidence !== true) {
+      problems.push(`checks[${index}] (${check.name}): trace target requires traceEvidence capability`);
+    }
+  }
+  return problems;
+}
+
 // Applies a case's text checks to a hand-written answer; used to validate graders against known samples.
 export function gradeSample(c, text) {
   const failed = [];
+  if (c.schemaVersion === 2) {
+    const transcript = typeof text === 'string' ? { finalText: text } : text;
+    const checks = c.checks.map((check) => evaluateCheck(check, transcript));
+    const errors = checks.filter((check) => check.passed === null)
+      .map((check) => ({ name: check.name, diagnostic: check.diagnostic ?? 'required evidence is missing' }));
+    return {
+      passed: errors.length === 0 && checks.every((check) => check.passed),
+      failed: checks.filter((check) => check.passed === false).map((check) => check.name),
+      ...(errors.length ? { invalid: true, errors } : { invalid: false, errors: [] }),
+    };
+  }
   for (const k of c.checks) {
     if (k.type !== 'regex' && k.type !== 'not_regex') continue;
     const hit = new RegExp(k.pattern, k.flags ?? '').test(text);

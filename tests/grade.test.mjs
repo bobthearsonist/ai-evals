@@ -7,6 +7,7 @@ import { parseClaudeTrace, gradeTranscript } from '../local/grade.mjs';
 import { regradeRun } from '../local/regrade.mjs';
 import { registerStubs } from '../local/stubs.mjs';
 import { getRunner } from '../local/contract.mjs';
+import { createCopilotRunner } from '../local/copilot.mjs';
 
 const line = (o) => JSON.stringify(o);
 const trace = (answer, { skill = true, done = true } = {}) => [
@@ -53,6 +54,7 @@ test('regradeRun grades archived traces offline and excludes incomplete runs', (
 
 test('every registered adapter exposes the driver interface', () => {
   registerStubs();
+  createCopilotRunner();
   for (const id of ['copilot', 'opencode']) {
     const r = getRunner(id);
     for (const m of ['preflight', 'plannedSessions', 'prepare', 'parseTrace', 'run']) assert.equal(typeof r[m], 'function', `${id}.${m}`);

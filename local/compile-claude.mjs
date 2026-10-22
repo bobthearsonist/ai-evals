@@ -3,19 +3,9 @@ import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync }
 import { join } from 'node:path';
 import { validateCase } from './contract.mjs';
 
-export function loadSuite(suiteDir) {
-  const cases = readdirSync(suiteDir)
-    .filter((f) => f.endsWith('.json'))
-    .sort()
-    .map((f) => JSON.parse(readFileSync(join(suiteDir, f), 'utf8')));
-  for (const c of cases) {
-    const problems = validateCase(c);
-    if (problems.length) throw new Error(`invalid case ${c?.id}: ${problems.join('; ')}`);
-  }
-  return cases;
-}
+export { loadSuite } from './suite.mjs';
 
-function hashTree(dir) {
+export function hashTree(dir) {
   const h = createHash('sha256');
   const walk = (d) => {
     for (const name of readdirSync(d).sort()) {
@@ -42,6 +32,10 @@ function graderMd({ type, weight = 1, arm = 'both', extra = {}, body = '' }) {
  * The skill is copied byte-for-byte from the source; its tree hash is returned.
  */
 export function compileClaudePlugin({ outDir, skillName, skillSourceDir, cases, fixturesDir = null, canaryToken = randomBytes(12).toString('hex'), maxTurns = 6, timeoutSeconds = 120 }) {
+  for (const c of cases) {
+    const problems = validateCase(c);
+    if (problems.length) throw new Error(`invalid case ${c?.id}: ${problems.join('; ')}`);
+  }
   const pluginRoot = join(outDir, 'plugin');
   mkdirSync(outDir, { recursive: true });
   // Planted outside the plugin so it only appears in a trace if a run reads outside its plugin.
@@ -67,7 +61,11 @@ export function compileClaudePlugin({ outDir, skillName, skillSourceDir, cases, 
       cpSync(fixturesDir, join(dir, 'resources'), { recursive: true });
       writeFileSync(join(dir, 'case.yaml'), `schema_version: "1.1"\nname: ${c.id}\ncontext:\n  add_dirs: [resources]\n`);
     }
-    c.checks.forEach((k, i) => {
+    // V2 policy is evaluated once by the host against the captured transcript.
+    const nativeChecks = c.schemaVersion === 2
+      ? [{ type: 'regex', name: 'capture-only-host-graded', pattern: '[\\s\\S]+' }]
+      : c.checks;
+    nativeChecks.forEach((k, i) => {
       let type = 'regex';
       let extra;
       if (k.type === 'file_exists') {
