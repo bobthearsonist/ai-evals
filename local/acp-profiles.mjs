@@ -33,17 +33,18 @@ function mergeJudgeMeta(sessionMeta, model) {
   }
 
   const existing = supplied.claudeCode?.options ?? {};
-  const allowedOptions = new Set(['model', 'tools', 'settingSources', 'strictMcpConfig']);
+  const allowedOptions = new Set(['model', 'tools', 'skills', 'settingSources', 'strictMcpConfig']);
   for (const key of Object.keys(existing)) {
     if (!allowedOptions.has(key)) throw new Error(`ai-evals-judge does not allow claudeCode.options.${key}`);
   }
   const expected = {
     tools: [],
+    skills: [],
     settingSources: [],
     strictMcpConfig: true,
     ...(model ? { model } : {}),
   };
-  for (const key of ['tools', 'settingSources', 'strictMcpConfig']) {
+  for (const key of ['tools', 'skills', 'settingSources', 'strictMcpConfig']) {
     if (Object.hasOwn(existing, key) && JSON.stringify(existing[key]) !== JSON.stringify(expected[key])) {
       throw new Error(`ai-evals-judge does not allow overriding claudeCode.options.${key}`);
     }
@@ -79,7 +80,7 @@ function capabilitiesFor(client, profile) {
   return {
     toolFree: false,
     skillsFree: false,
-    mcpFree: false,
+    mcpFree: ['claude', 'copilot'].includes(profile),
     fixedModel: ['copilot', 'opencode', 'claude'].includes(client),
     sessionCancel: true,
   };
@@ -110,6 +111,7 @@ export function validateAcpProfile({
   env,
   sessionMeta,
   mcpServers,
+  skillName,
 } = {}) {
   const selectedProfile = profile ?? (client === 'custom' ? 'custom' : client);
   const errors = [];
@@ -126,14 +128,20 @@ export function validateAcpProfile({
   if (mode === 'judge' && selectedProfile !== 'ai-evals-judge') {
     errors.push('judge mode requires the ai-evals-judge profile');
   }
-  if (mode === 'candidate' && ['copilot', 'opencode', 'claude'].includes(selectedProfile)) {
+  if (mode === 'candidate' && selectedProfile === 'opencode') {
     errors.push(`native ${selectedProfile} candidate profile has no verified ambient skills/MCP isolation; use an explicitly configured custom ACP profile`);
+  }
+  const nativeCandidate = mode === 'candidate' && ['claude', 'copilot'].includes(selectedProfile);
+  if (nativeCandidate) {
+    if (client !== selectedProfile) errors.push('native ACP client must match its profile');
+    if (args || env || sessionMeta || mcpServers?.length) errors.push('native ACP candidate profiles do not allow args, env, sessionMeta or MCP overrides');
+    if (skillName !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(skillName)) errors.push('skillName must be kebab-case');
   }
   if (selectedProfile === 'ai-evals-judge') {
     if (client !== 'claude') errors.push('ai-evals-judge is available only for the Claude ACP adapter');
     if (mode !== 'judge') errors.push('ai-evals-judge requires mode: judge');
     if (!model) errors.push('ai-evals-judge requires an explicit model');
-    if (command || args) errors.push('ai-evals-judge does not allow command or args overrides');
+    if (command || args || env) errors.push('ai-evals-judge does not allow command, args or env overrides');
     if (mcpServers?.length) errors.push('ai-evals-judge does not allow ACP MCP servers');
   } else if (selectedProfile === 'custom' && (!command || !Array.isArray(args))) {
     errors.push('custom ACP profile requires command and args');
@@ -156,25 +164,37 @@ export function validateAcpProfile({
   if (!errors.length) {
     try {
       if (selectedProfile === 'ai-evals-judge') {
-        launchCommand = 'claude-agent-acp';
-        launchArgs = [];
+        launchCommand = process.execPath;
+        launchArgs = [fileURLToPath(new URL('./claude-acp.mjs', import.meta.url))];
         launchMeta = mergeJudgeMeta(sessionMeta, model);
       } else if (selectedProfile === 'copilot') {
         launchCommand ??= 'copilot';
-        launchArgs = [...launchArgs, '--acp', '--stdio'];
+        launchArgs = [
+          '--acp', '--stdio', '--no-auto-update', '--no-custom-instructions',
+          '--disable-builtin-mcps', '--no-ask-user', '--no-bash-env',
+          '--available-tools', 'view', 'glob', 'grep', 'skill',
+          '--allow-tool', 'view', '--allow-tool', 'glob', '--allow-tool', 'grep', '--allow-tool', 'skill',
+          '--add-dir', cwd,
+        ];
         if (model) launchArgs.push('--model', model);
       } else if (selectedProfile === 'opencode') {
         launchCommand ??= 'opencode';
         if (model) launchArgs.push('--model', model);
         launchArgs.push('acp');
       } else if (selectedProfile === 'claude') {
-        launchCommand ??= 'claude-agent-acp';
-        if (model) {
-          const claudeCode = sessionMeta?.claudeCode ?? {};
-          const options = claudeCode.options ?? {};
-          if (options.model && options.model !== model) throw new Error('Claude ACP model conflicts with sessionMeta');
-          launchMeta = { ...sessionMeta, claudeCode: { ...claudeCode, options: { ...options, model } } };
-        }
+        launchCommand ??= process.execPath;
+        launchArgs = [fileURLToPath(new URL('./claude-acp.mjs', import.meta.url))];
+        if (command) throw new Error('Claude ACP uses the pinned adapter; command overrides are not supported');
+        launchMeta = { claudeCode: { options: {
+          ...(model ? { model } : {}),
+          tools: ['Read', 'Glob', 'Grep', 'Skill'],
+          allowedTools: ['Read', 'Glob', 'Grep', 'Skill'],
+          skills: skillName ? [skillName] : [],
+          settingSources: ['project'],
+          strictMcpConfig: true,
+          allowDangerouslySkipPermissions: false,
+          settings: { disableAllHooks: true },
+        } } };
       }
     } catch (error) {
       errors.push(error.message);
@@ -197,8 +217,8 @@ export function validateAcpProfile({
     sessionMeta: launchMeta,
     mcpServers: mcpServers ?? [],
     model: model ?? null,
-    ...(selectedProfile === 'ai-evals-judge' && client === 'claude' && mode === 'judge' && !errors.length
-      ? { expectedAgentVersion: '0.94.0' }
+    ...((selectedProfile === 'ai-evals-judge' || nativeCandidate) && !errors.length
+      ? { isolatedClient: client, expectedAgentVersion: client === 'claude' ? '0.94.0' : '1.0.102' }
       : {}),
     capabilities,
     ...(selectedProfile === 'ai-evals-judge' && client === 'claude' && mode === 'judge' && !errors.length
@@ -244,3 +264,4 @@ function freezeDeep(value) {
 export function isBuiltAcpLaunch(options) {
   return Boolean(options && BUILT_LAUNCHES.has(options));
 }
+import { fileURLToPath } from 'node:url';

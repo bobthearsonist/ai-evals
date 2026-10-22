@@ -1,7 +1,10 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { executeAcp } from './acp.mjs';
 import { buildAcpLaunch } from './acp-profiles.mjs';
+import { checkAcpRuntime } from './acp-isolation.mjs';
 import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities } from './contract.mjs';
 import { plannedSessions, prepareWorkspace } from './workspace.mjs';
 import { gradeTranscript, verdict } from './grade.mjs';
@@ -48,20 +51,21 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
     parseTrace: parseAcpTrace,
     async preflight({ model, timeoutSeconds = 120 } = {}) {
       const problems = [];
+      let authentication = 'not checked; no model call made';
       if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds * 1000 > 2_147_483_647) problems.push('invalid ACP timeout');
       if (typeof model !== 'string' || !model.trim() || model.toLowerCase() === 'auto') problems.push('ACP requires an explicit model, not auto');
       if (!problems.length) {
-        try { build({
+        try { const launchOptions = build({
           client, mode: 'candidate', model, cwd: process.cwd(),
           prompt: 'ACP capability preflight; this prompt is never executed.',
           timeoutMs: timeoutSeconds * 1000, ...(exe ? { command: exe } : {}),
-        }); }
+        }); authentication = checkAcpRuntime(launchOptions).authentication; }
         catch (error) { problems.push(error.message); }
       }
       return {
         ok: problems.length === 0, problems, transport: 'acp', profile: acpProfile ? 'custom' : client,
-        capabilities: this.capabilities, isolation: 'not verified; non-hermetic',
-        authentication: 'not checked; no model call made',
+        capabilities: this.capabilities, isolation: acpProfile ? 'not verified; non-hermetic' : 'isolated configuration and read-only tools; not an OS sandbox; live acceptance not checked',
+        authentication,
       };
     },
     async run(suite, options) {
@@ -89,19 +93,23 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       let sessions = 0;
       let stopReason = null;
       jobs: for (const c of selected) for (let repeat = 1; repeat <= runs; repeat++) for (const arm of ablation === 'with-without' ? ['with', 'without'] : ['with']) {
-        const workspace = mkdtempSync(join(outputDir, 'workspace-'));
+        const workspace = mkdtempSync(join(tmpdir(), 'ai-evals-acp-workspace-'));
         const dir = join(dirname(outputDir), 'traces', c.id);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, `${arm}-${repeat}.jsonl`);
         const receipt = { caseId: c.id, arm, repeat, started: false, valid: false, exitCode: null, error: null };
         try {
-          const skillsRoot = join(workspace, '.github', 'skills');
+          // A real repository boundary prevents parent-directory configuration
+          // discovery even when the caller's temp directory is inside a repo.
+          execFileSync('git', ['init', '--quiet', workspace], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+          const skillsRoot = join(workspace, client === 'claude' ? '.claude' : '.github', 'skills');
           mkdirSync(skillsRoot, { recursive: true });
           if (arm === 'with') cpSync(skillSnapshot, join(skillsRoot, skillName), { recursive: true });
           const fixtures = join(workspace, 'fixtures');
           if (c.fixtures) cpSync(fixtureSnapshot, fixtures, { recursive: true });
           const launchOptions = build({
             client, mode: 'candidate', model, cwd: workspace, timeoutMs: timeoutSeconds * 1000,
+            ...(arm === 'with' ? { skillName } : {}),
             prompt: c.fixtures ? c.prompt.replaceAll('{{fixtures}}', fixtures) : c.prompt,
             ...(exe ? { command: exe } : {}),
           });

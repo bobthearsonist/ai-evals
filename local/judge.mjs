@@ -202,7 +202,6 @@ async function executeWithAcp({ client, model, cwd, prompt, timeoutMs }) {
     timeoutMs,
     profile: JUDGE_PROFILE.id,
     requiredCapabilities: ['tool-free', 'skills-free', 'mcp-free', 'fixed-model'],
-    sessionMeta: { purpose: 'ai-evals-judge' },
   });
   if (!hasVerifiedJudgeIsolation(options)) {
     throw new Error('ACP runtime cannot verify a tool-, skill-, and MCP-free judge profile');
@@ -291,7 +290,6 @@ export async function judgeAnswer({
         client, mode: 'judge', model, cwd, prompt, timeoutMs,
         profile: JUDGE_PROFILE.id,
         requiredCapabilities: ['tool-free', 'skills-free', 'mcp-free', 'fixed-model'],
-        sessionMeta: { purpose: 'ai-evals-judge' },
       })
       : await executeWithAcp({ client, model, cwd, prompt, timeoutMs });
     checked = validateExecution(execution, candidate.text, model);

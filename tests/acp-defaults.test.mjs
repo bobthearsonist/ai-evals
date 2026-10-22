@@ -23,7 +23,7 @@ function setup(t) {
   return { root, profile };
 }
 
-test('both clients use ACP and refuse unverified native isolation without spawning', async () => {
+test('both clients use ACP and reject unavailable or unsupported executable overrides', async () => {
   for (const client of ['claude', 'copilot']) {
     const runner = createAcpRunner({ client, exe: 'must-not-be-launched' });
     assert.equal(runner.transport, 'acp');
@@ -31,17 +31,16 @@ test('both clients use ACP and refuse unverified native isolation without spawni
     const preflight = await runner.preflight({ model: 'synthetic-model' });
     assert.equal(preflight.ok, false);
     assert.equal(preflight.transport, 'acp');
-    assert.match(preflight.problems.join(';'), /no verified ambient skills\/MCP isolation/);
-    assert.doesNotMatch(preflight.problems.join(';'), /ENOENT|not runnable/);
+    assert.match(preflight.problems.join(';'), /command overrides are not supported|not runnable/);
   }
 });
 
-test('default CLI preflight reports ACP refusals for both clients and requires an explicit model', () => {
+test('default CLI preflight reports executable errors for both clients and requires an explicit model', () => {
   for (const client of ['claude', 'copilot']) {
     const result = invoke(['preflight', '--client', client, '--model', 'synthetic-model', '--exe', 'must-not-launch']);
     assert.equal(result.status, 1);
     assert.equal(JSON.parse(result.stdout).transport, 'acp');
-    assert.match(result.stdout, /no verified ambient skills/);
+    assert.match(result.stdout, /command overrides are not supported|not runnable/);
     const missing = invoke(['preflight', '--client', client]);
     assert.match(missing.stdout, /explicit model/);
   }

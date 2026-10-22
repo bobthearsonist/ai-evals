@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   buildJudgePrompt, judgeAnswer, judgeArchivedRun, planJudgeRequests, storeAssessment,
 } from '../local/judge.mjs';
+import { buildAcpLaunch } from '../local/acp.mjs';
 
 const fixtureDir = fileURLToPath(new URL('./fixtures/judge/', import.meta.url));
 const artifactDir = join(fixtureDir, 'storage');
@@ -59,6 +60,22 @@ test('accepts a valid pass and keeps verdict separate from deterministic grading
   assert.equal(result.assessment.answerSha256.length, 64);
   assert.equal(result.assessment.rubricSha256.length, 64);
   assert.equal(result.assessment.usage.inputTokens, 100);
+});
+
+test('judge orchestration builds the real Claude profile without forbidden metadata', async () => {
+  const execution = await executeFor('pass.json');
+  const result = await judgeAnswer(args({
+    client: 'claude',
+    execute: async (options) => {
+      const launch = buildAcpLaunch(options);
+      assert.equal(launch.profile, 'ai-evals-judge');
+      assert.deepEqual(launch.sessionMeta.claudeCode.options.tools, []);
+      assert.deepEqual(launch.sessionMeta.claudeCode.options.skills, []);
+      assert.deepEqual(launch.sessionMeta.claudeCode.options.settingSources, []);
+      return execution;
+    },
+  }));
+  assert.equal(result.status, 'judged', result.reason);
 });
 
 test('accepts a valid fail with exact evidence', async () => {

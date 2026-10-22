@@ -7,8 +7,9 @@ included here.
 
 Requires Node.js 22.12+. **ACP is the only supported transport** for Claude
 and Copilot, including the library API, CLI and multi-runner.
-Native candidate ACP profiles currently refuse because ambient skill/MCP
-isolation has not been verified. SDK/plugin-eval execution and replay code
+Native candidate profiles use temporary homes, explicit read-only tools and
+controlled skill workspaces. Live native ACP acceptance is still pending.
+SDK/plugin-eval execution and replay code
 have been removed; there is no transport selector or fallback.
 ACP is not an isolation guarantee. Gherkin and compatibility JSON use the same
 deterministic policy; AI judging is a separate, explicitly approved assessment.
@@ -16,10 +17,12 @@ deterministic policy; AI judging is a separate, explicitly approved assessment.
 ## Install
 
 This repository is public; installation does not require GitHub credentials.
-Pin a commit or tag in each consumer, rather than following a moving branch:
+After publication, pin a reviewed commit or tag in each consumer, rather than
+following a moving branch. Replace the placeholder below; historical tags do
+not include the unpublished ACP/Gherkin migration:
 
 ```powershell
-npm install --save-dev git+https://github.com/bobthearsonist/ai-evals.git#v0.1.0
+npm install --save-dev git+https://github.com/bobthearsonist/ai-evals.git#REVIEWED_COMMIT
 ```
 
 The npm package is `@bobthearsonist/ai-evals`; the executable is `ai-evals`.
@@ -248,12 +251,25 @@ hard spend cap; spend-cap flags are rejected for this transport.
 Native launch profiles must verify the required isolation controls before
 inference. Unsupported controls cause refusal, not a less-isolated fallback.
 Offline fake-server success is not native-runtime acceptance.
-The built-in **candidate** profiles for Claude, Copilot and OpenCode currently
-all refuse: ambient skill/MCP isolation has not been verified for those ACP
-launches. An `--exe` override does not bypass this refusal. Both adapter
-clients use only ACP; this refusal remains until native
-candidate isolation is verified. Historical SDK smoke acceptance is not ACP
-acceptance. No login, API billing substitution or fallback is attempted.
+The built-in **candidate** profiles use Copilot CLI **1.0.102** or the package's
+pinned Claude ACP adapter **0.94.0** / Claude Agent SDK **0.3.303**. Copilot
+disables custom instructions and built-in MCPs and exposes only
+`view`, `glob`, `grep`, `skill`; Claude exposes only `Read`, `Glob`, `Grep`,
+`Skill`, uses project-only settings and strict empty MCP configuration.
+Each arm gets a temporary Git workspace with fixtures; only the with-skill
+arm contains the selected skill. Both use temporary HOME/config directories,
+drop ambient provider/configuration environment variables and pass existing
+credentials only in the child environment. No credential file is copied.
+Claude refuses active machine-managed settings rather than bypassing policy.
+OpenCode remains unsupported by standard entrypoints.
+
+Claude uses an existing `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or
+unexpired local Claude OAuth credential; Copilot uses an existing
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
+No login, token refresh, API billing substitution or fallback is attempted.
+The native protocol must confirm the pinned agent version and requested model
+before receiving a prompt. These controls have offline coverage, **not live
+native ACP acceptance**. Historical SDK smoke acceptance is not ACP acceptance.
 
 For an explicitly configured custom server, use `--acp-profile PATH` with a
 JSON object containing `command`, `args`, and optionally `env`, `sessionMeta`
@@ -271,7 +287,9 @@ require `--claude-acp-profile` and `--copilot-acp-profile` instead of an ambiguo
 shared profile. `--exe` cannot be combined with a custom profile.
 
 Every ACP candidate needs an explicit model (`auto` is rejected). Preflight
-validates launch/profile capabilities without starting an agent. Approval
+validates launch/profile capabilities, local executable/policy readiness and
+credential availability without an inference call. It does not prove provider
+access or live skill discovery. Approval
 gates still precede native capability preflight: single-runner unapproved
 `run` exits 4, multi-runner/run-all exits 1 and prints the exact session count.
 Dry runs report `"transport": "acp"` without authentication or inference.
@@ -319,9 +337,9 @@ history. These assessments are advisory: no judge accuracy calibration,
 cross-provider quality result, or live judge acceptance is claimed.
 The built-in judge profile is Claude-only and source-verified for its pinned
 adapter, not live-audited. Other native judge runtimes remain unsupported.
-It expects a separately installed `claude-agent-acp` executable reporting
-adapter version `0.94.0`, and confirmation of the requested model before the
-prompt is sent. That adapter is not bundled or installed by this package.
+It uses the same package-pinned adapter and sterile home as candidate sessions,
+with no tools or skills and no project settings. It requires adapter version
+`0.94.0` and confirmation of the requested model before the prompt is sent.
 Missing executables, version mismatches and unconfirmed models fail closed.
 
 ## Engine and adapters

@@ -49,21 +49,41 @@ test('buildAcpLaunch creates a side-effect-free launch and frozen judge isolatio
     skills: false,
     mcp: false,
   });
-  assert.equal(valid.command, 'claude-agent-acp');
-  assert.deepEqual(valid.args, []);
+  assert.equal(valid.command, process.execPath);
+  assert.match(valid.args[0], /local[\\/]claude-acp.mjs$/);
   assert.deepEqual(valid.mcpServers, []);
   assert.equal(valid.sessionMeta.disableBuiltInTools, true);
   assert.deepEqual(valid.sessionMeta.claudeCode.options.tools, []);
+  assert.deepEqual(valid.sessionMeta.claudeCode.options.skills, []);
   assert.deepEqual(valid.sessionMeta.claudeCode.options.settingSources, []);
   assert.equal(valid.sessionMeta.claudeCode.options.strictMcpConfig, true);
   assert.equal(valid.sessionMeta.claudeCode.options.model, 'claude-test-model');
   assert.equal(valid.expectedAgentVersion, '0.94.0');
 
   assert.equal(validateAcpProfile({ client: 'copilot', mode: 'judge', profile: 'copilot', cwd: root, model: 'x' }).valid, false);
-  assert.equal(validateAcpProfile({ client: 'copilot', mode: 'candidate', cwd: root, requiredCapabilities: ['mcp-free'] }).valid, false);
-  for (const client of ['copilot', 'opencode', 'claude']) {
-    assert.equal(validateAcpProfile({ client, mode: 'candidate', cwd: root, model: 'candidate-model' }).valid, false);
+  assert.equal(validateAcpProfile({ client: 'copilot', mode: 'candidate', cwd: root, requiredCapabilities: ['mcp-free'] }).valid, true);
+  for (const client of ['copilot', 'claude']) {
+    const candidate = validateAcpProfile({ client, mode: 'candidate', cwd: root, model: 'candidate-model', skillName: 'demo' });
+    assert.equal(candidate.valid, true, candidate.errors.join(';'));
+    assert.equal(candidate.isolatedClient, client);
+    assert.equal(candidate.capabilities.mcpFree, true);
+    assert.deepEqual(candidate.mcpServers, []);
+    assert.equal(validateAcpProfile({ client, cwd: root, env: { HOME: 'ambient' } }).valid, false);
+    assert.equal(validateAcpProfile({ client, cwd: root, sessionMeta: { override: true } }).valid, false);
+    assert.equal(validateAcpProfile({ client, cwd: root, args: ['--unsafe'] }).valid, false);
+    if (client === 'claude') {
+      assert.deepEqual(candidate.sessionMeta.claudeCode.options.settingSources, ['project']);
+      assert.deepEqual(candidate.sessionMeta.claudeCode.options.skills, ['demo']);
+      assert.deepEqual(candidate.sessionMeta.claudeCode.options.tools, ['Read', 'Glob', 'Grep', 'Skill']);
+      assert.equal(candidate.sessionMeta.claudeCode.options.strictMcpConfig, true);
+    } else {
+      for (const flag of ['--no-custom-instructions', '--disable-builtin-mcps', '--no-auto-update', '--no-bash-env']) {
+        assert.ok(candidate.args.includes(flag), flag);
+      }
+      assert.ok(candidate.args.includes('skill'));
+    }
   }
+  assert.equal(validateAcpProfile({ client: 'opencode', cwd: root }).valid, false);
   assert.throws(() => buildAcpLaunch({
     client: 'claude', mode: 'judge', profile: 'ai-evals-judge', cwd: root, model: 'x',
     sessionMeta: { disableBuiltInTools: false },

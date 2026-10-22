@@ -19,18 +19,23 @@ const feature = `Feature: Shared transport
     Then the response contains "hello"
 `;
 
-test('Gherkin cases execute through the ACP runner and replay the identical host policy', async () => {
+for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherkin skills and readable fixtures with identical replay policy`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'acp-runner-'));
   try {
     const source = join(root, 'skill');
     mkdirSync(source);
     writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\nGreet.\n');
-    const cases = compileFeature(feature, { uri: 'transport.feature' });
+    const fixturesDir = join(root, 'inputs');
+    mkdirSync(fixturesDir);
+    writeFileSync(join(fixturesDir, 'input.txt'), 'synthetic fixture');
+    const cases = compileFeature(feature
+      .replace('    When the user asks:', '    Given the suite fixtures are available\n    When the user asks:')
+      .replace('Say hello.', 'Say hello. Read {{fixtures}}.'), { uri: 'transport.feature' });
     const workspaces = [];
     let calls = 0;
     const launches = new WeakSet();
     const runner = createAcpRunner({
-      client: 'copilot',
+      client,
       launch: (options) => {
         const result = Object.freeze({ ...options });
         launches.add(result);
@@ -41,12 +46,14 @@ test('Gherkin cases execute through the ACP runner and replay the identical host
         const { cwd, prompt } = options;
         calls++;
         workspaces.push(cwd);
-        assert.equal(prompt, 'Say hello.');
-        assert.equal(existsSync(join(cwd, '.github', 'skills', 'demo')), calls === 1);
+        assert.equal(prompt, `Say hello. Read ${join(cwd, 'fixtures')}.`);
+        assert.equal(readFileSync(join(cwd, 'fixtures', 'input.txt'), 'utf8'), 'synthetic fixture');
+        assert.equal(existsSync(join(cwd, client === 'claude' ? '.claude' : '.github', 'skills', 'demo')), calls === 1);
+        assert.equal(options.skillName, calls === 1 ? 'demo' : undefined);
         return { finalText: 'hello', toolCalls: [], raw: 'hello', complete: true, usage: null, errors: [] };
       },
     });
-    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, fixturesDir, cases });
     const result = await runner.run(cases, {
       ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'with-without', model: 'fake-model',
     });

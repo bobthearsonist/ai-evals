@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { client as createClient, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import { buildAcpLaunch, isBuiltAcpLaunch, validateAcpProfile } from './acp-profiles.mjs';
+import { prepareAcpEnvironment } from './acp-isolation.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -106,7 +107,15 @@ export {
 
 export async function executeAcp(options) {
   assertExecutionOptions(options);
+  const isolated = options.isolatedClient ? prepareAcpEnvironment(options.isolatedClient) : null;
+  try {
+    return await executeConfiguredAcp(options, isolated?.env ?? { ...process.env, ...(options.env ?? {}) });
+  } finally {
+    isolated?.cleanup();
+  }
+}
 
+async function executeConfiguredAcp(options, environment) {
   const raw = [];
   const errors = [];
   const text = [];
@@ -123,7 +132,7 @@ export async function executeAcp(options) {
   try {
     child = spawn(options.command, options.args, {
       cwd: options.cwd,
-      env: { ...process.env, ...(options.env ?? {}) },
+      env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -188,8 +197,8 @@ export async function executeAcp(options) {
     if (initialized.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error(`ACP agent negotiated unsupported protocol version ${initialized.protocolVersion}`);
     }
-    if (options.mode === 'judge' && initialized.agentInfo?.version !== options.expectedAgentVersion) {
-      throw new Error(`ai-evals-judge requires Claude ACP adapter ${options.expectedAgentVersion}; received ${initialized.agentInfo?.version ?? 'no version'}`);
+    if (options.expectedAgentVersion && initialized.agentInfo?.version !== options.expectedAgentVersion) {
+      throw new Error(`ACP profile ${options.profile} requires agent ${options.expectedAgentVersion}; received ${initialized.agentInfo?.version ?? 'no version'}`);
     }
 
     const created = await request(methods.agent.session.new, {
@@ -198,6 +207,7 @@ export async function executeAcp(options) {
       ...(options.sessionMeta ? { _meta: options.sessionMeta } : {}),
     });
     sessionId = created.sessionId;
+    model = getModelFromConfigOptions(created.configOptions);
 
     if (options.model && model !== options.model) {
       const modelOption = created.configOptions?.find((option) => option.category === 'model' || option.id === 'model');
@@ -209,13 +219,13 @@ export async function executeAcp(options) {
           value: options.model,
         });
         const configuredModel = getModelFromConfigOptions(configured.configOptions);
-        if (options.mode === 'judge' && configuredModel !== options.model) {
-          throw new Error(`Claude ACP adapter did not confirm judge model ${options.model}`);
+        if (options.isolatedClient && configuredModel !== options.model) {
+          throw new Error(`ACP adapter did not confirm model ${options.model}`);
         }
         model = configuredModel ?? options.model;
       } else if (options.modelAtLaunch) {
-        if (options.mode === 'judge') {
-          throw new Error(`Claude ACP adapter did not confirm judge model ${options.model}`);
+        if (options.isolatedClient) {
+          throw new Error(`ACP adapter did not confirm model ${options.model}`);
         }
         model = options.model;
       } else {
