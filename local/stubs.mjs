@@ -22,10 +22,6 @@ function stub(id, requirements) {
 }
 
 export function registerStubs() {
-  stub('copilot', [
-    'no official eval tool; needs own driver around `copilot -p` with JSON output',
-    'auth via existing login; COPILOT_HOME override may drop credential-store login (unverified)',
-  ]);
   stub('opencode', [
     'no official eval tool; needs driver around `opencode run --format json`',
     'config isolation via OPENCODE_CONFIG_DIR (unverified)',

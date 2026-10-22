@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { CLIENT_STATUS, makeRunResult, registerRunner } from './contract.mjs';
-import { parseClaudeTrace, verdict } from './grade.mjs';
+import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities } from './contract.mjs';
+import { gradeTranscript, parseClaudeTrace, verdict } from './grade.mjs';
 import { compileClaudePlugin } from './compile-claude.mjs';
+import { createAcpRunner } from './acp-runner.mjs';
 
 export { verdict };
 
@@ -40,6 +41,29 @@ export function isCompleteRun(run, { exists = existsSync, read = (p) => readFile
   return /"type":"result"/.test(read(run.tracePath));
 }
 
+const FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+const PERMISSION_DENIED = /denied because Claude Code is running in don.t ask mode/;
+
+// Refused fixture reads without any successful read are execution failures, not quality failures.
+export function isBlockedFromInputs(run, { exists = existsSync, read = (p) => readFileSync(p, 'utf8') } = {}) {
+  if (!run?.tracePath || !exists(run.tracePath)) return false;
+  const fileCalls = new Set();
+  let denied = 0;
+  let succeeded = 0;
+  for (const line of read(run.tracePath).split('\n')) {
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    for (const part of ev?.message?.content ?? []) {
+      if (part?.type === 'tool_use' && FILE_TOOLS.has(part.name)) fileCalls.add(part.id);
+      if (part?.type !== 'tool_result' || !fileCalls.has(part.tool_use_id)) continue;
+      const text = Array.isArray(part.content) ? part.content.map((x) => x?.text ?? '').join(' ') : String(part.content ?? '');
+      if (PERMISSION_DENIED.test(text)) denied++;
+      else if (part.is_error !== true) succeeded++;
+    }
+  }
+  return denied > 0 && succeeded === 0;
+}
+
 // Copies each run's trace next to the results and drops the temp dir it came from.
 export function archiveTraces(aggregatePath, destDir) {
   const agg = JSON.parse(readFileSync(aggregatePath, 'utf8'));
@@ -60,10 +84,37 @@ export function archiveTraces(aggregatePath, destDir) {
   return n;
 }
 
-export function normalizeAggregate(agg) {
+export function normalizeAggregate(agg, { suite = [], canaryToken, fixtureCaseIds = new Set() } = {}) {
   const cases = (agg.cases ?? []).map((c) => {
+    const definition = suite.find((item) => item.id === (c.id ?? c.name ?? c.case));
+    if (definition?.schemaVersion === 2) {
+      const scores = { with: [], without: [] };
+      let invalidRuns = 0;
+      for (const arm of ['with', 'without']) for (const run of c.arms?.[arm] ?? []) {
+        if (!run.tracePath || !existsSync(run.tracePath)) { invalidRuns++; continue; }
+        const transcript = parseClaudeTrace(readFileSync(run.tracePath, 'utf8'));
+        if (!transcript.complete || definition.fixtures && isBlockedFromInputs(run)) { invalidRuns++; continue; }
+        const grade = gradeTranscript(definition, transcript, { arm, canaryToken });
+        if (grade.invalid || grade.score == null) invalidRuns++;
+        else scores[arm].push(grade.score);
+      }
+      const mean = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+      const withScore = mean(scores.with);
+      const withoutScore = mean(scores.without);
+      return {
+        id: definition.id, withScore, withoutScore,
+        delta: withScore != null && withoutScore != null ? withScore - withoutScore : null,
+        withRuns: scores.with, withoutRuns: scores.without,
+        verdict: verdict(scores.with, scores.without), invalidRuns,
+        partial: Boolean(c.partial) || invalidRuns > 0 || scores.with.length === 0,
+        partialReason: invalidRuns ? 'required transcript evidence unavailable' : c.partialReason ?? null,
+        costUsd: ['with', 'without'].flatMap((arm) => c.arms?.[arm] ?? [])
+          .reduce((sum, run) => typeof run.costUsd === 'number' ? (sum ?? 0) + run.costUsd : sum, null),
+      };
+    }
     const a = c.aggregates ?? {};
-    const valid = (runs) => (runs ?? []).filter((r) => isCompleteRun(r));
+    const usesFixtures = definition?.fixtures || fixtureCaseIds.has(c.id ?? c.name);
+    const valid = (runs) => (runs ?? []).filter((r) => isCompleteRun(r) && !(usesFixtures && isBlockedFromInputs(r)));
     const mean = (runs) => (runs?.length ? runs.reduce((s, r) => s + (r.score ?? 0), 0) / runs.length : null);
     const sum = (...arms) => {
       const costs = arms.flatMap((r) => r ?? []).map((r) => r.costUsd).filter((x) => typeof x === 'number');
@@ -88,14 +139,24 @@ export function normalizeAggregate(agg) {
       costUsd: sum(c.arms?.with, c.arms?.without),
     };
   });
-  return { cases, overallScore: agg.aggregates?.overallScore ?? null, costUsd: agg.costUsd ?? null, claudeVersion: agg.claudeVersion ?? null, partial: Boolean(agg.partial) };
+  const hostGraded = suite.some((c) => c.schemaVersion === 2);
+  const scores = cases.flatMap((c) => c.withRuns);
+  const overallScore = hostGraded
+    ? scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null
+    : agg.aggregates?.overallScore ?? null;
+  return { cases, overallScore, costUsd: agg.costUsd ?? null, claudeVersion: agg.claudeVersion ?? null, partial: Boolean(agg.partial) || cases.some((c) => c.partial) };
 }
 
-export function createClaudeRunner({ exe = 'claude' } = {}) {
+export function createClaudeRunner(options = {}) {
+  return createAcpRunner({ ...options, client: 'claude' });
+}
+
+export function createLegacyClaudeRunner({ exe = 'claude' } = {}) {
   const run = (args) => spawnSync(exe, args, { encoding: 'utf8', shell: false, windowsHide: true });
   return registerRunner({
     id: 'claude',
-    capabilities: { hermetic: false, skillTrace: true, usageObservable: true, hardLimits: false, implemented: true },
+    transport: 'native',
+    capabilities: { hermetic: false, skillTrace: true, toolEvidence: true, traceEvidence: true, usageObservable: true, hardLimits: false, implemented: true },
     async preflight() {
       const problems = [];
       const v = run(['--version']);
@@ -113,7 +174,11 @@ export function createClaudeRunner({ exe = 'claude' } = {}) {
       return compileClaudePlugin(opts);
     },
     parseTrace: parseClaudeTrace,
-    async run(suite, { pluginRoot, outputDir, runs, ablation, maxCostUsd = 5, caseId, concurrency = 1 }) {
+    async run(suite, { pluginRoot, outputDir, runs, ablation, maxCostUsd = 5, caseId, concurrency = 1, canaryToken }) {
+      for (const c of suite.filter((item) => !caseId || item.id === caseId)) {
+        const problems = validateCapabilities(c, { toolEvidence: true, traceEvidence: true });
+        if (problems.length) throw new Error(`unsupported Claude case ${c.id}: ${problems.join('; ')}`);
+      }
       const proc = run(buildArgs({ pluginRoot, outputDir, runs, ablation, maxCostUsd, caseId, concurrency }));
       const base = { client: 'claude', outputDir, caveats: ['subscription login used; not hermetic', 'cost is a list-price estimate'] };
       if (proc.error) return makeRunResult({ ...base, status: CLIENT_STATUS.ERROR, caveats: [...base.caveats, proc.error.message] });
@@ -122,9 +187,12 @@ export function createClaudeRunner({ exe = 'claude' } = {}) {
         const auth = proc.status === 2 || /auth/i.test(`${proc.stderr}${proc.stdout}`);
         return makeRunResult({ ...base, status: auth ? CLIENT_STATUS.AUTH_FAILED : CLIENT_STATUS.ERROR, caveats: [...base.caveats, `no aggregate-result.json; exit ${proc.status}; ${String(proc.stderr).slice(0, 500)}`] });
       }
-      const n = normalizeAggregate(JSON.parse(readFileSync(aggPath, 'utf8')));
+      const n = normalizeAggregate(JSON.parse(readFileSync(aggPath, 'utf8')), { suite, canaryToken });
       archiveTraces(aggPath, join(outputDir, '..', 'traces'));
-      const status = proc.status === 0 ? CLIENT_STATUS.PASSED : proc.status === 2 ? CLIENT_STATUS.PARTIAL : CLIENT_STATUS.BELOW_THRESHOLD;
+      const hostGraded = suite.some((c) => c.schemaVersion === 2);
+      const status = n.partial || proc.status === 2 ? CLIENT_STATUS.PARTIAL
+        : hostGraded ? n.overallScore === 1 ? CLIENT_STATUS.PASSED : CLIENT_STATUS.BELOW_THRESHOLD
+          : proc.status === 0 ? CLIENT_STATUS.PASSED : CLIENT_STATUS.BELOW_THRESHOLD;
       return makeRunResult({
         ...base, status, clientVersion: n.claudeVersion, overallScore: n.overallScore, costUsd: n.costUsd,
         cases: n.cases, sessions: plannedSessions({ caseCount: caseId ? 1 : suite.length, runs, ablation }),

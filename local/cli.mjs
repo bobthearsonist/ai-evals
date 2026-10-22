@@ -2,39 +2,57 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { getRunner } from './contract.mjs';
-import { loadSuite } from './compile-claude.mjs';
-import { createClaudeRunner } from './claude-plugin-eval.mjs';
+import { getRunner, validateCapabilities } from './contract.mjs';
+import { loadSuite } from './suite.mjs';
+import { createClaudeRunner, createLegacyClaudeRunner } from './claude-plugin-eval.mjs';
+import { createCopilotRunner, createLegacyCopilotRunner } from './copilot.mjs';
 import { registerStubs } from './stubs.mjs';
 import { recordRun } from './summary.mjs';
 import { regradeRun } from './regrade.mjs';
 import { resolveConfig, suiteSettings } from './config.mjs';
+import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from './policy.mjs';
+import { createAcpRunner } from './acp-runner.mjs';
+import { judgeArchive } from './judge-cli.mjs';
 
 if (process.argv[2] === 'run-all') {
   process.argv.splice(2, 1);
   await import('./run-all.mjs');
   process.exit();
 }
+if (process.argv.some((a) => a === '--runners' || a.startsWith('--runners='))
+  && !['validate', 'regrade', 'judge'].includes(process.argv[2])) {
+  await import('./run-all.mjs');
+  process.exit();
+}
 if (process.argv.includes('--help') || !process.argv[2]) {
-  console.log('usage: ai-evals <preflight|smoke|run|regrade <runDir>|run-all> [--config evals/evals.json] [--suite NAME] [--approve-sessions N]');
+  console.log('usage: ai-evals <validate|preflight|smoke|run|regrade <runDir>|judge <runDir>|run-all> [--config evals/evals.json] [--suite NAME] [--client claude|copilot | --runners claude,copilot] [--dry-run] [--policy recorded|current] [--approve-sessions N]');
   process.exit(0);
 }
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    client: { type: 'string', default: 'claude' },
+    client: { type: 'string' },
     suite: { type: 'string' },
     runs: { type: 'string' },
     case: { type: 'string' },
     'approve-sessions': { type: 'string' },
-    'max-cost-usd': { type: 'string', default: '5' },
+    'max-cost-usd': { type: 'string' },
     concurrency: { type: 'string', default: '1' },
     exe: { type: 'string' },
+    model: { type: 'string' },
+    'max-ai-credits': { type: 'string' },
+    'timeout-seconds': { type: 'string' },
+    'copilot-home': { type: 'string' },
     'skill-root': { type: 'string' },
     config: { type: 'string' },
     'cases-dir': { type: 'string' },
     'output-dir': { type: 'string' },
     'results-dir': { type: 'string' },
+    'dry-run': { type: 'boolean', default: false },
+    policy: { type: 'string' },
+    transport: { type: 'string', default: 'acp' },
+    'acp-profile': { type: 'string' },
+    rubric: { type: 'string' },
   },
 });
 
@@ -42,25 +60,99 @@ const config = resolveConfig({ configPath: values.config, flags: { skillRoot: va
 const SKILL_ROOTS = config.skillsRoots;
 const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => existsSync(join(p, 'SKILL.md')));
 const command = positionals[0];
-createClaudeRunner(values.exe ? { exe: values.exe } : {});
+if (values.policy !== undefined && command !== 'regrade') throw new Error('--policy is only supported by regrade');
+if (values.rubric !== undefined && command !== 'judge') throw new Error('--rubric is only supported by judge');
+createClaudeRunner();
+createCopilotRunner();
 registerStubs();
-const runner = getRunner(values.client);
+if (!['native', 'acp'].includes(values.transport)) throw new Error('--transport must be native or acp');
+if (values.transport === 'acp' && (values['max-cost-usd'] !== undefined || values['max-ai-credits'] !== undefined)) {
+  throw new Error('ACP profiles do not enforce spend caps; --max-cost-usd and --max-ai-credits are unsupported');
+}
+if (values['acp-profile'] && values.transport !== 'acp') throw new Error('--acp-profile requires --transport acp');
+if (values['acp-profile'] && values.exe) throw new Error('--acp-profile contains its command; do not combine with --exe');
+if (values.transport === 'acp' && values['copilot-home']) throw new Error('--copilot-home is a legacy native option; ACP requires an explicitly configured profile');
+if (values.transport === 'native') {
+  createLegacyClaudeRunner(values.exe ? { exe: values.exe } : {});
+  createLegacyCopilotRunner(values.exe ? { exe: values.exe } : {});
+} else if (['claude', 'copilot'].includes(values.client ?? 'claude')) {
+  createAcpRunner({
+    client: values.client ?? 'claude', exe: values.exe,
+    ...(values['acp-profile'] ? { acpProfile: JSON.parse(readFileSync(resolve(values['acp-profile']), 'utf8')) } : {}),
+  });
+}
+let runner = getRunner(values.client ?? 'claude');
+if (command === 'judge') {
+  if (values.transport !== 'acp') throw new Error('judge requires ACP transport');
+  if (positionals.length !== 2) throw new Error('judge requires one run directory');
+  if (!values.client || !values.model) throw new Error('judge requires an explicit --client and --model');
+  if (values.exe || values.suite || values.runs || values['copilot-home'] || values['acp-profile']) {
+    throw new Error('judge does not support --exe, --suite, --runs, --copilot-home or --acp-profile; it reads archived answers only');
+  }
+  if (values['max-cost-usd'] !== undefined || values['max-ai-credits'] !== undefined) throw new Error('judge ACP profiles do not enforce spend caps');
+  const runDir = resolve(positionals[1]);
+  const meta = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
+  if (meta.transport !== undefined && !['native', 'acp'].includes(meta.transport)) throw new Error(`unsupported archived transport: ${meta.transport}`);
+  if (meta.transport === 'acp') createAcpRunner({ client: meta.client });
+  else if (meta.client === 'copilot') createLegacyCopilotRunner();
+  else if (!meta.client || meta.client === 'claude') createLegacyClaudeRunner();
+  else throw new Error(`unsupported archived client: ${meta.client}`);
+  const archivedRunner = getRunner(meta.client ?? 'claude');
+  const timeoutMs = Number(values['timeout-seconds'] ?? 120) * 1000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) throw new Error('invalid judge timeout');
+  const result = await judgeArchive({
+    runDir, parse: archivedRunner.parseTrace, requireReceipt: meta.client === 'copilot' || meta.transport === 'acp',
+    caseIds: values.case ? [values.case] : undefined, rubricPath: values.rubric && resolve(values.rubric),
+    model: values.model, client: values.client, approveSessions: Number(values['approve-sessions'] ?? 0), timeoutMs, dryRun: values['dry-run'],
+  });
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.dryRun || result.assessments.length > 0 && result.assessments.every((assessment) => assessment.judgement?.verdict === 'pass') ? 0 : 2);
+}
+const runnerOptions = {
+  model: values.model,
+  maxAiCredits: Number(values['max-ai-credits'] ?? 30),
+  timeoutSeconds: Number(values['timeout-seconds'] ?? 120),
+  copilotHome: values['copilot-home'],
+};
 
-if (!runner.capabilities.implemented) {
+if (!runner.capabilities.implemented && !['validate', 'regrade'].includes(command) && !values['dry-run']) {
   console.error(`${runner.id}: not implemented`);
   process.exit(3);
 }
 if (command === 'preflight') {
-  const r = await runner.preflight({});
-  console.log(JSON.stringify(r, null, 2));
+  const r = await runner.preflight(runnerOptions);
+  console.log(JSON.stringify({ transport: runner.transport ?? values.transport, ...r }, null, 2));
   process.exit(r.ok ? 0 : 1);
 }
 
-if (command !== 'smoke' && command !== 'run' && command !== 'regrade') {
-  console.error('usage: ai-evals <preflight|smoke|run|regrade <runDir>> --suite NAME [--config evals/evals.json] [--approve-sessions N]');
+if (!['smoke', 'run', 'regrade', 'validate'].includes(command)) {
+  console.error('usage: ai-evals <validate|preflight|smoke|run|regrade <runDir>> --suite NAME [--config evals/evals.json] [--approve-sessions N]');
   process.exit(64);
 }
 
+if (command === 'regrade') {
+  if (!positionals[1]) throw new Error('regrade requires a run directory');
+  const runDir = resolve(positionals[1]);
+  if (!existsSync(join(runDir, 'traces'))) throw new Error(`no archived traces: ${runDir}`);
+  const meta = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
+  if (meta.transport !== undefined && !['native', 'acp'].includes(meta.transport)) throw new Error(`unsupported archived transport: ${meta.transport}`);
+  if (values.client && meta.client && values.client !== meta.client) throw new Error(`archived client is ${meta.client}, not ${values.client}`);
+  if (meta.transport === 'acp') createAcpRunner({ client: meta.client });
+  else if (meta.client === 'copilot') createLegacyCopilotRunner();
+  else createLegacyClaudeRunner();
+  runner = getRunner(meta.client ?? values.client ?? 'claude');
+  let currentCases;
+  if (values.policy === 'current') {
+    if (!values.suite) throw new Error('--suite is required for --policy current');
+    currentCases = loadSuite(join(config.casesDir, suiteSettings(config, values.suite).casesFolder));
+  }
+  const policy = replayPolicy(runDir, { currentCases, mode: values.policy ?? 'recorded' });
+  const out = regradeRun({ tracesDir: join(runDir, 'traces'), cases: policy.cases, parse: runner.parseTrace, canaryToken: meta.canaryToken, requireReceipt: runner.id === 'copilot' || meta.transport === 'acp' });
+  const path = archiveReplay(runDir, policy, out);
+  for (const c of out) console.log(`${c.id}: with=${c.withScore?.toFixed(2)} without=${c.withoutScore?.toFixed(2)} [${c.verdict}]${c.invalidRuns ? ' invalid=' + c.invalidRuns : ''}`);
+  console.log(`policy=${policy.mode} sha256=${policy.sha256} assessment=${path}`);
+  process.exit(0);
+}
 if (!values.suite) {
   console.error('--suite is required');
   process.exit(64);
@@ -69,13 +161,8 @@ const { skill: skillName, casesFolder } = suiteSettings(config, values.suite);
 const suiteDir = join(config.casesDir, casesFolder);
 const cases = loadSuite(suiteDir);
 const fixturesDir = join(suiteDir, 'fixtures');
-if (command === 'regrade') {
-  if (!positionals[1]) throw new Error('regrade requires a run directory');
-  const runDir = resolve(positionals[1]);
-  if (!existsSync(join(runDir, 'traces'))) throw new Error(`no archived traces: ${runDir}`);
-  const meta = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
-  const out = regradeRun({ tracesDir: join(runDir, 'traces'), cases, parse: runner.parseTrace, canaryToken: meta.canaryToken });
-  for (const c of out) console.log(`${c.id}: with=${c.withScore?.toFixed(2)} without=${c.withoutScore?.toFixed(2)} [${c.verdict}]${c.invalidRuns ? ' invalid=' + c.invalidRuns : ''}`);
+if (command === 'validate') {
+  console.log(JSON.stringify({ suite: values.suite, caseCount: cases.length, policy: policySnapshot(cases) }, null, 2));
   process.exit(0);
 }
 const skillDir = findSkill(skillName);
@@ -92,26 +179,36 @@ const approved = Number(values['approve-sessions'] ?? 0);
 
 if (!Number.isInteger(runs) || runs < 1) throw new Error('--runs must be a positive integer');
 if (caseId && !cases.some((c) => c.id === caseId)) throw new Error(`unknown case: ${caseId}`);
+const capabilityProblems = cases.filter((c) => !caseId || c.id === caseId)
+  .flatMap((c) => validateCapabilities(c, runner.capabilities).map((problem) => `${c.id}: ${problem}`));
+if (capabilityProblems.length) throw new Error(`unsupported execution evidence:\n- ${capabilityProblems.join('\n- ')}`);
 if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) < 1 || Number(values.concurrency) > 8) throw new Error('--concurrency must be an integer from 1 to 8');
-if (!Number.isFinite(Number(values['max-cost-usd'])) || Number(values['max-cost-usd']) <= 0) throw new Error('--max-cost-usd must be positive');
-const pre = await runner.preflight({});
-if (!pre.ok) {
-  console.error(`preflight failed:\n- ${pre.problems.join('\n- ')}`);
-  process.exit(1);
+if (values['dry-run']) {
+  console.log(JSON.stringify({ suite: values.suite, client: runner.id, transport: values.transport, runs, ablation, plannedSessions: planned, policy: policySnapshot(cases.filter((c) => !caseId || c.id === caseId)) }, null, 2));
+  process.exit(0);
 }
+if (runner.id === 'copilot' && values['max-cost-usd'] !== undefined) throw new Error('Copilot has no USD cost cap; use --max-ai-credits (soft, per session)');
+if (!Number.isFinite(Number(values['max-cost-usd'] ?? 5)) || Number(values['max-cost-usd'] ?? 5) <= 0) throw new Error('--max-cost-usd must be positive');
 if (!(approved >= planned && planned > 0)) {
   console.error(`approval gate: this run starts ${planned} live session(s); pass --approve-sessions ${planned} to proceed`);
   process.exit(4);
 }
+const pre = await runner.preflight(runnerOptions);
+if (!pre.ok) {
+  console.error(`preflight failed:\n- ${pre.problems.join('\n- ')}`);
+  process.exit(1);
+}
 
-const ts = `${new Date().toISOString().replace(/[:.]/g, '-')}-${values.suite}`;
+const ts = `${new Date().toISOString().replace(/[:.]/g, '-')}-${values.suite}-${runner.id}`;
 const outDir = join(config.outputDir, `${ts}-${command}`);
 mkdirSync(outDir, { recursive: true });
-const { pluginRoot, skillHash, canaryToken } = runner.prepare({
+const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: values.transport, model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null });
+const prepared = runner.prepare({
   outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, cases,
 });
-const result = await runner.run(cases, { pluginRoot, outputDir: join(outDir, 'eval-output'), runs, ablation, maxCostUsd: Number(values['max-cost-usd']), caseId, concurrency: Number(values.concurrency) });
-const normalized = { ...result, skillSha256: skillHash, canaryToken, command, runs, ablation, plannedSessions: planned };
+const { skillHash, canaryToken } = prepared;
+const result = await runner.run(cases, { ...prepared, ...runnerOptions, outputDir: join(outDir, 'eval-output'), runs, ablation, maxCostUsd: Number(values['max-cost-usd'] ?? 5), caseId, concurrency: Number(values.concurrency) });
+const normalized = { ...result, transport: values.transport, suite: values.suite, skillSha256: skillHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
 writeFileSync(join(outDir, 'normalized.json'), JSON.stringify(normalized, null, 2));
 if (!smoke && result.cases?.length) {
   const { diff } = recordRun(config.resultsDir, values.suite, normalized);

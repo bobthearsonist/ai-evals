@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Runs every suite in parallel (separate processes) with per-suite concurrency.
-// usage: node local/run-all.mjs [--concurrency 4] [--runs 3] [--approve-sessions N]
 import { spawn } from 'node:child_process';
 import { readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -8,60 +6,173 @@ import { resolveConfig, suiteSettings } from './config.mjs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { renderMarkdown } from './summary.mjs';
+import { loadSuite } from './suite.mjs';
+import { createClaudeRunner, createLegacyClaudeRunner } from './claude-plugin-eval.mjs';
+import { createCopilotRunner, createLegacyCopilotRunner } from './copilot.mjs';
+import { registerStubs } from './stubs.mjs';
+import { getRunner, validateCapabilities } from './contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 if (process.argv.includes('--help')) {
-  console.log('usage: ai-evals run-all [--config evals/evals.json] [--suites a,b] [--runs 3] [--concurrency 4] [--approve-sessions N]');
+  console.log('usage: ai-evals <run-all|run|smoke|preflight> [--runners claude,copilot] [--suite NAME | --suites a,b] [--config evals/evals.json] [--runs 3] [--concurrency 4] [--copilot-model MODEL] [--approve-sessions N]');
   process.exit(0);
 }
-const { values } = parseArgs({
-  options: { concurrency: { type: 'string', default: '4' }, runs: { type: 'string', default: '3' }, 'approve-sessions': { type: 'string' }, suites: { type: 'string' }, config: { type: 'string' }, 'cases-dir': { type: 'string' }, 'output-dir': { type: 'string' }, 'results-dir': { type: 'string' }, 'skill-root': { type: 'string' }, client: { type: 'string' }, exe: { type: 'string' } },
+const { values, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    concurrency: { type: 'string', default: '4' }, runs: { type: 'string', default: '3' },
+    'approve-sessions': { type: 'string' }, suite: { type: 'string' }, suites: { type: 'string' },
+    case: { type: 'string' }, config: { type: 'string' }, 'cases-dir': { type: 'string' },
+    'output-dir': { type: 'string' }, 'results-dir': { type: 'string' }, 'skill-root': { type: 'string' },
+    client: { type: 'string' }, runners: { type: 'string', multiple: true }, exe: { type: 'string' },
+    model: { type: 'string' }, 'copilot-model': { type: 'string' },
+    'claude-model': { type: 'string' }, 'opencode-model': { type: 'string' },
+    'claude-exe': { type: 'string' }, 'copilot-exe': { type: 'string' }, 'opencode-exe': { type: 'string' },
+    'max-cost-usd': { type: 'string' }, 'max-ai-credits': { type: 'string' },
+    'timeout-seconds': { type: 'string' }, 'copilot-home': { type: 'string' },
+    'dry-run': { type: 'boolean', default: false },
+    transport: { type: 'string', default: 'acp' },
+    'acp-profile': { type: 'string' },
+    'claude-acp-profile': { type: 'string' }, 'copilot-acp-profile': { type: 'string' },
+  },
 });
+const command = positionals[0] ?? 'run-all';
+if (!['run-all', 'run', 'smoke', 'preflight'].includes(command) || positionals.length > 1) {
+  throw new Error('--runners supports preflight, smoke, run and run-all; regrade one archived run at a time');
+}
+if (values.client && values.runners) throw new Error('use either --client or --runners, not both');
+const ids = (values.runners ?? [values.client ?? 'claude']).flatMap((s) => s.split(',').map((v) => v.trim()));
+if (ids.some((s) => !s) || new Set(ids).size !== ids.length) throw new Error('--runners must contain distinct non-empty runner IDs');
+if (ids.length > 1 && (values.exe || values.model || values['acp-profile'])) {
+  throw new Error('multiple runners require client-specific options, not ambiguous --exe/--model/--acp-profile');
+}
+createClaudeRunner();
+createCopilotRunner();
+registerStubs();
+if (!['native', 'acp'].includes(values.transport)) throw new Error('--transport must be native or acp');
+if (values.transport === 'acp' && (values['max-cost-usd'] !== undefined || values['max-ai-credits'] !== undefined)) {
+  throw new Error('ACP profiles do not enforce spend caps; spend cap options are unsupported');
+}
+if (values.transport === 'native') {
+  createLegacyClaudeRunner();
+  createLegacyCopilotRunner();
+}
+if (values.transport !== 'acp' && ['acp-profile', 'claude-acp-profile', 'copilot-acp-profile'].some((key) => values[key])) throw new Error('--acp-profile requires --transport acp');
+if (values.transport === 'acp' && values['copilot-home']) throw new Error('--copilot-home is a legacy native option');
+const runners = ids.map(getRunner);
+for (const r of runners) {
+  if (!r.capabilities.implemented) {
+    console.error(`${r.id}: not implemented`);
+    process.exit(3);
+  }
+}
+const runnerArgs = (id) => {
+  const opts = {
+    client: id, exe: values[`${id}-exe`] ?? values.exe, transport: values.transport,
+    model: values[`${id}-model`] ?? values.model,
+    'acp-profile': values[`${id}-acp-profile`] ?? values['acp-profile'],
+    ...(id === 'copilot' ? {
+      model: values['copilot-model'] ?? values.model,
+      'max-ai-credits': values['max-ai-credits'],
+      'timeout-seconds': values['timeout-seconds'], 'copilot-home': values['copilot-home'],
+    } : { 'timeout-seconds': values['timeout-seconds'], 'max-cost-usd': values['max-cost-usd'] }),
+  };
+  return Object.entries(opts).flatMap(([k, v]) => v === undefined ? [] : [`--${k}`, v]);
+};
+if (ids.length === 1 && ids[0] === 'copilot' && values['max-cost-usd'] !== undefined) {
+  throw new Error('Copilot has no USD cost cap; use --max-ai-credits (soft, per session)');
+}
+async function invoke(args) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [join(here, 'cli.mjs'), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.once('error', (e) => done({ code: null, out, err: e.message }));
+    child.once('close', (code) => done({ code, out, err }));
+  });
+}
 const config = resolveConfig({ configPath: values.config, flags: { casesDir: values['cases-dir'], resultsDir: values['results-dir'] } });
-const casesRoot = config.casesDir;
-const passthrough = ['config', 'cases-dir', 'output-dir', 'results-dir', 'skill-root', 'client', 'exe'].flatMap((k) => (values[k] ? [`--${k}`, values[k]] : []));
-const only = values.suites?.split(',');
-const folder = (s) => join(casesRoot, suiteSettings(config, s).casesFolder);
-const candidates = Object.keys(config.suites).length ? Object.keys(config.suites) : readdirSync(casesRoot);
-const suites = candidates.filter((s) => (!only || only.includes(s)) && existsSync(folder(s)) && readdirSync(folder(s)).some((f) => f.endsWith('.json')));
-const runs = Number(values.runs);
+let suites = [];
+const counts = new Map();
+if (command !== 'preflight') {
+  if (command !== 'run-all' && !values.suite) throw new Error('--suite is required');
+  if (values.suite && values.suites) throw new Error('use either --suite or --suites, not both');
+  if (command !== 'run-all' && values.suites) throw new Error('--suites is for run-all; use --suite');
+  const only = (values.suites ?? values.suite)?.split(',');
+  const folder = (s) => join(config.casesDir, suiteSettings(config, s).casesFolder);
+  const candidates = Object.keys(config.suites).length ? Object.keys(config.suites) : readdirSync(config.casesDir);
+  suites = candidates.filter((s) => (!only || only.includes(s)) && existsSync(folder(s)) && readdirSync(folder(s)).some((f) => f.endsWith('.feature') || f.endsWith('.json') && !f.endsWith('.samples.json')));
+  if (only?.some((s) => !suites.includes(s))) throw new Error(`unknown or empty suite in --suites: ${only.join(',')}`);
+  if (!suites.length) throw new Error(`no suites found: ${config.casesDir}`);
+  for (const s of suites) {
+    const cases = loadSuite(folder(s));
+    if (values.case && !cases.some((c) => c.id === values.case)) throw new Error(`unknown case: ${values.case} in ${s}`);
+    const selectedCase = values.case ?? (command === 'smoke' ? cases[0].id : undefined);
+    const problems = cases.filter((c) => !selectedCase || c.id === selectedCase)
+      .flatMap((c) => runners.flatMap((r) => validateCapabilities(c, r.capabilities).map((problem) => `${r.id}/${s}/${c.id}: ${problem}`)));
+    if (problems.length) throw new Error(`unsupported execution evidence:\n- ${problems.join('\n- ')}`);
+    counts.set(s, command === 'smoke' || values.case ? 1 : cases.length);
+  }
+}
+const runs = command === 'smoke' ? 1 : Number(values.runs);
 if (!Number.isInteger(runs) || runs < 1) throw new Error('--runs must be a positive integer');
 if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) < 1 || Number(values.concurrency) > 8) throw new Error('--concurrency must be an integer from 1 to 8');
-if (only?.some((s) => !suites.includes(s))) throw new Error(`unknown or empty suite in --suites: ${values.suites}`);
-if (!suites.length) throw new Error(`no suites found: ${casesRoot}`);
-const perSuite = (s) => readdirSync(folder(s)).filter((f) => f.endsWith('.json')).length * runs * 2;
-const total = suites.reduce((n, s) => n + perSuite(s), 0);
-if (Number(values['approve-sessions']) !== total) {
-  console.log(`approval gate: this starts ${total} live session(s) across ${suites.length} suites; pass --approve-sessions ${total} to proceed`);
+const planned = (s, r) => r.plannedSessions({ caseCount: counts.get(s), runs, ablation: command === 'smoke' ? 'none' : 'with-without' });
+const total = suites.reduce((n, s) => n + runners.reduce((m, r) => m + planned(s, r), 0), 0);
+if (values['dry-run']) {
+  console.log(JSON.stringify({ suites, runners: ids, transport: values.transport, runs, plannedSessions: total }, null, 2));
+  process.exit(0);
+}
+if (command !== 'preflight' && Number(values['approve-sessions']) !== total) {
+  console.log(`approval gate: this starts ${total} live session(s) across ${suites.length} suites and ${runners.length} runner(s); pass --approve-sessions ${total} to proceed`);
   process.exit(1);
 }
-
-const results = await Promise.all(suites.map((s) => new Promise((resolve) => {
-  const p = spawn(process.execPath, [join(here, 'cli.mjs'), 'run', '--suite', s, '--runs', String(runs), '--concurrency', values.concurrency, '--approve-sessions', String(perSuite(s)), ...passthrough], { stdio: ['ignore', 'pipe', 'pipe'] });
-  let out = '';
-  let err = '';
-  p.stdout.on('data', (d) => (out += d));
-  p.stderr.on('data', (d) => (err += d));
-  p.on('error', (error) => resolve({ suite: s, status: 'error', error: error.message }));
-  p.on('close', (code) => {
-    try {
-      const parsed = JSON.parse(out);
-      resolve({ ...parsed, suite: s, diffs: err.split(/\r?\n/).filter((l) => l.startsWith('diff ')), status: code === 0 ? parsed.status : 'error', error: code === 0 ? null : err.trim() });
-    } catch (error) {
-      resolve({ suite: s, status: 'error', error: `exit ${code}: ${err.trim() || out.trim() || error.message}` });
-    }
-  });
-})));
-let cost = 0;
-for (const r of results) {
-  cost += r.costUsd ?? 0;
-  console.log(`${r.suite}: ${r.status} score=${r.overallScore?.toFixed?.(2)} cost=$${r.costUsd?.toFixed?.(2)}`);
-  if (r.error) console.error(r.error);
-  for (const c of r.cases ?? []) console.log(`  ${c.id}: with=${c.withScore?.toFixed(2)} without=${c.withoutScore?.toFixed(2)} delta=${c.delta?.toFixed(2)} [${c.verdict}]${c.invalidRuns ? ` (${c.invalidRuns} invalid run(s) excluded)` : ''}`);
+const passthrough = ['config', 'cases-dir', 'output-dir', 'results-dir', 'skill-root'].flatMap((k) => values[k] === undefined ? [] : [`--${k}`, values[k]]);
+// Check every selected client before any paid work, not after another client has spent its budget.
+const preflights = [];
+for (const id of ids) {
+  const p = await invoke(['preflight', ...runnerArgs(id)]);
+  let result;
+  try { result = JSON.parse(p.out); } catch { result = { ok: false, problems: [p.err || p.out || `exit ${p.code}`] }; }
+  preflights.push({ client: id, ...result, ok: p.code === 0 && result.ok === true });
 }
-for (const r of results) for (const d of r.diffs ?? []) console.log(`vs previous ${r.suite} ${d.slice(5)}`);
-const resultsDir = config.resultsDir;
-mkdirSync(resultsDir, { recursive: true });
-writeFileSync(join(resultsDir, 'summary.md'), renderMarkdown(results.map((r) => ({ ...r, cases: r.cases ?? [] }))));
-console.log(`total cost ~$${cost.toFixed(2)}`);
+if (command === 'preflight') {
+  console.log(JSON.stringify(preflights, null, 2));
+  process.exit(preflights.every((p) => p.ok) ? 0 : 1);
+}
+const failed = preflights.filter((p) => !p.ok);
+const results = failed.map((p) => ({ client: p.client, transport: values.transport, status: 'error', error: `preflight failed:\n- ${(p.problems ?? []).join('\n- ')}`, cases: [] }));
+if (!failed.length) {
+  // Suite/runner pairs are serial: --concurrency is a global ceiling, not multiplied by the suite count.
+  jobs: for (const s of suites) for (const r of runners) {
+    const p = await invoke([
+      command === 'smoke' ? 'smoke' : 'run', '--suite', s, '--runs', String(runs),
+      '--concurrency', values.concurrency, '--approve-sessions', String(planned(s, r)),
+      ...passthrough, ...runnerArgs(r.id), ...(values.case ? ['--case', values.case] : []),
+    ]);
+    let result;
+    try {
+      const parsed = JSON.parse(p.out);
+      result = { ...parsed, suite: s, client: r.id, diffs: p.err.split(/\r?\n/).filter((l) => l.startsWith('diff ')) };
+      if (p.code !== 0) result.error = p.err.trim() || parsed.caveats?.at(-1) || `exit ${p.code}`;
+      if (p.code !== 0 && ['passed', 'below_threshold'].includes(result.status)) result.status = 'error';
+    } catch {
+      result = { suite: s, client: r.id, status: 'error', cases: [], error: `exit ${p.code}: ${p.err.trim() || p.out.trim() || 'invalid child output'}` };
+    }
+    results.push(result);
+    if (!['passed', 'below_threshold'].includes(result.status)) break jobs;
+  }
+}
+for (const r of results) {
+  console.log(`${r.suite ?? 'preflight'}: ${r.status} client=${r.client} transport=${r.transport ?? values.transport}${r.model ? ` model=${r.model}` : ''} score=${r.overallScore?.toFixed?.(2) ?? '-'} cost=${typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(2)}` : 'unknown'}`);
+  if (r.error) console.error(r.error);
+  for (const c of r.cases ?? []) console.log(`  ${c.id}: with=${c.withScore?.toFixed(2) ?? '-'} without=${c.withoutScore?.toFixed(2) ?? '-'} delta=${c.delta?.toFixed(2) ?? '-'} [${c.verdict}]${c.invalidRuns ? ` (${c.invalidRuns} invalid run(s) excluded)` : ''}`);
+  for (const d of r.diffs ?? []) console.log(`vs previous ${r.client}/${r.suite} ${d.slice(5)}`);
+}
+mkdirSync(config.resultsDir, { recursive: true });
+writeFileSync(join(config.resultsDir, command === 'smoke' ? 'smoke-summary.md' : 'summary.md'), renderMarkdown(results.map((r) => ({ ...r, cases: r.cases ?? [] }))));
+const knownCost = results.reduce((n, r) => n + (r.costUsd ?? 0), 0);
+console.log(`known cost ~$${knownCost.toFixed(2)}${results.some((r) => r.costUsd == null) ? '; some USD costs unknown' : ''}`);
 process.exitCode = results.some((r) => !['passed', 'below_threshold'].includes(r.status)) ? 2 : 0;

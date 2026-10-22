@@ -1,11 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const r2 = (x) => (typeof x === 'number' ? Math.round(x * 100) / 100 : null);
 
 export function slim(normalized, suite) {
   return {
     suite,
+    client: normalized.client ?? 'claude',
+    transport: normalized.transport ?? 'native',
+    model: normalized.model ?? null,
+    clientVersion: normalized.clientVersion ?? null,
     at: new Date().toISOString(),
     status: normalized.status,
     skillSha256: normalized.skillSha256 ?? null,
@@ -20,6 +25,8 @@ export function slim(normalized, suite) {
 
 export function diffRuns(prev, cur) {
   if (!prev) return [];
+  if ((prev.client ?? 'claude') !== (cur.client ?? 'claude') || (prev.model ?? null) !== (cur.model ?? null)) return [];
+  if ((prev.transport ?? 'native') !== (cur.transport ?? 'native')) return [];
   const before = new Map(prev.cases.map((c) => [c.id, c]));
   return cur.cases.map((c) => {
     const p = before.get(c.id);
@@ -35,7 +42,7 @@ export function diffRuns(prev, cur) {
 
 // Writes <resultsDir>/<suite>/<timestamp>.json and latest.json; returns the diff against the previous latest.
 export function recordRun(resultsDir, suite, normalized) {
-  const dir = join(resultsDir, suite);
+  const dir = join(historyRoot(resultsDir, normalized), suite);
   mkdirSync(dir, { recursive: true });
   const latestPath = join(dir, 'latest.json');
   const prev = existsSync(latestPath) ? JSON.parse(readFileSync(latestPath, 'utf8')) : null;
@@ -47,14 +54,23 @@ export function recordRun(resultsDir, suite, normalized) {
 }
 
 export function renderMarkdown(suites) {
-  const lines = ['# Eval summary', '', '| Suite | Case | With | Without | Delta | Verdict | Invalid |', '|---|---|---|---|---|---|---|'];
+  const lines = ['# Eval summary', '', '| Runner | Transport | Model | Suite | Case | With | Without | Delta | Verdict | Invalid |', '|---|---|---|---|---|---|---|---|---|---|'];
   for (const s of suites) {
-    for (const c of s.cases) lines.push(`| ${s.suite} | ${c.id} | ${c.withScore ?? '-'} | ${c.withoutScore ?? '-'} | ${c.delta ?? '-'} | ${c.verdict} | ${c.invalidRuns} |`);
+    for (const c of s.cases) lines.push(`| ${s.client ?? 'claude'} | ${s.transport ?? 'native'} | ${s.model ?? '-'} | ${s.suite} | ${c.id} | ${c.withScore ?? '-'} | ${c.withoutScore ?? '-'} | ${c.delta ?? '-'} | ${c.verdict} | ${c.invalidRuns} |`);
   }
   return `${lines.join('\n')}\n`;
 }
 
-export function loadLatest(resultsDir, suite) {
-  const p = join(resultsDir, suite, 'latest.json');
+export function historyRoot(resultsDir, { client = 'claude', model = null, transport = 'native' } = {}) {
+  if (transport === 'acp') resultsDir = join(resultsDir, 'acp');
+  if (client === 'claude' && model === null) return resultsDir;
+  if (!/^[a-z][a-z0-9-]*$/.test(client)) throw new Error('invalid history client');
+  const id = String(model ?? 'unspecified');
+  const slug = id.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'model';
+  return join(resultsDir, client, `${slug}-${createHash('sha256').update(id).digest('hex').slice(0, 12)}`);
+}
+
+export function loadLatest(resultsDir, suite, identity) {
+  const p = join(historyRoot(resultsDir, identity), suite, 'latest.json');
   return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null;
 }

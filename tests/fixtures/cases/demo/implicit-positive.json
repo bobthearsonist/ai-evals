@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "implicit-positive",
-  "prompt": "Give me a greeting.",
-  "shouldTrigger": true,
-  "checks": [{ "type": "regex", "pattern": "hello" }],
-  "samples": { "pass": ["hello"], "fail": ["goodbye"] }
-}

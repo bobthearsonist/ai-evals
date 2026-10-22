@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "explicit-positive",
-  "prompt": "Use the demo skill to greet me.",
-  "shouldTrigger": true,
-  "checks": [{ "type": "regex", "pattern": "hello" }],
-  "samples": { "pass": ["hello"], "fail": ["goodbye"] }
-}
