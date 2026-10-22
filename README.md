@@ -309,6 +309,10 @@ Each session preserves the branded frozen builder launch unchanged. Archives
 store raw ACP event objects plus a receipt; the shared grader sees a serialized
 raw string so live and replay trace/canary checks agree. Replay requires valid
 receipts and selects ACP from recorded metadata, never from current defaults.
+Copilot skill calls are identified by their native title plus structured skill
+input. Anonymous ACP read/search events retain their categories, not invented
+tool names: fixture-denial checks can use them, but exact tool-order checks
+still require names. Unrecognized anonymous tool events remain invalid evidence.
 
 AI judging is a separate command, never an automatic stage of `run`,
 `run-all`, deterministic `regrade`, or historical score calculation:

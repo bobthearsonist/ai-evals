@@ -148,3 +148,79 @@ test('ACP replay checks canaries and trace assertions inside structured raw even
   assert.equal(grade.checks.find((check) => check.name === 'protocol-content').passed, true);
   assert.equal(grade.checks.find((check) => check.name === 'canary').passed, false);
 });
+
+test('Copilot native skill events and anonymous ACP reads grade identically live and replay', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-copilot-tools-'));
+  try {
+    const source = join(root, 'skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\nGreet.\n');
+    const cases = compileFeature(feature.replace('@should-not-trigger', '@should-trigger'), { uri: 'copilot-tools.feature' });
+    const transcript = {
+      finalText: 'hello', complete: true, errors: [], raw: [],
+      toolCalls: [
+        { title: 'Using skill: demo', kind: 'other', rawInput: { skill: 'demo' }, status: 'completed' },
+        { title: 'Viewing input.txt', kind: 'read', rawInput: { path: 'input.txt' }, status: 'completed' },
+        { title: 'Searching files', kind: 'search', rawInput: { pattern: '*.md' }, status: 'completed' },
+      ],
+    };
+    const runner = createAcpRunner({
+      client: 'copilot', launch: (options) => Object.freeze({ ...options }), execute: async () => transcript,
+    });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases });
+    const result = await runner.run(cases, {
+      ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'none', model: 'fake-model',
+    });
+    assert.equal(result.status, 'passed', JSON.stringify(result.caveats));
+    assert.equal(result.cases[0].withScore, 1);
+    assert.equal(transcript.toolCalls[0].name, undefined, 'do not mutate the native evidence');
+    const replay = regradeRun({
+      cases, tracesDir: join(root, 'traces'), parse: parseAcpTrace,
+      canaryToken: prepared.canaryToken, requireReceipt: true,
+    });
+    assert.equal(replay[0].withScore, 1);
+    assert.equal(replay[0].invalidRuns, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('anonymous ACP reads preserve fixture-denial checks and do not imply native tool names', () => {
+  const c = {
+    schemaVersion: 2, id: 'native-read', prompt: 'Read fixture.', fixtures: true, shouldTrigger: false,
+    checks: [{ name: 'answer', type: 'contains', value: 'hello' }],
+  };
+  const parse = (toolCalls) => parseAcpTrace(JSON.stringify({
+    type: 'ai-evals.acp', schemaVersion: 1,
+    transcript: { finalText: 'hello', complete: true, raw: [], toolCalls },
+  }));
+  const read = { kind: 'read', rawInput: { path: 'input.txt' }, status: 'completed' };
+  const allowed = parse([read]);
+  assert.equal(gradeTranscript(c, allowed, { arm: 'without' }).score, 1);
+  assert.equal(allowed.toolCalls[0].name, undefined);
+  const denied = gradeTranscript(c, parse([{ ...read, status: 'failed', rawOutput: 'Permission denied' }]), { arm: 'without' });
+  assert.equal(denied.invalid, true);
+  assert.match(denied.errors[0].diagnostic, /reads were refused/);
+  const order = gradeTranscript({
+    ...c, checks: [{ name: 'order', type: 'tool_order', before: 'Skill', after: 'view' }],
+  }, allowed, { arm: 'without' });
+  assert.equal(order.invalid, true, 'a category is not a fabricated native tool name');
+});
+
+test('unrecognized anonymous tools cannot be mistaken for skill evidence', () => {
+  for (const call of [
+    { kind: 'other', title: 'Using skill: demo' },
+    { kind: 'other', title: 'Using skill: demo', rawInput: { skill: 'different' } },
+    { kind: 'other', title: 'Some other tool', rawInput: { skill: 'demo' } },
+    { kind: 'other', title: 'Using skill: ', rawInput: { skill: '' } },
+  ]) {
+    const parsed = parseAcpTrace(JSON.stringify({
+      type: 'ai-evals.acp', schemaVersion: 1,
+      transcript: { finalText: 'hello', complete: true, raw: [], toolCalls: [call] },
+    }));
+    const grade = gradeTranscript({
+      schemaVersion: 2, id: 'skill', prompt: 'Invoke demo.', shouldTrigger: true,
+      checks: [{ name: 'answer', type: 'contains', value: 'hello' }],
+    }, parsed, { arm: 'with' });
+    assert.equal(grade.invalid, true);
+    assert.match(grade.errors[0].diagnostic, /tool-call evidence is missing/);
+  }
+});

@@ -15,6 +15,16 @@ function gradingTranscript(transcript) {
   return {
     ...transcript,
     transport: 'acp',
+    toolCalls: transcript.toolCalls.map((call) => {
+      // Copilot omits native tool names; identify Skill only by its exact
+      // native title and structured input, not by arbitrary display text.
+      if (call.name === undefined && call.kind === 'other'
+        && typeof call.rawInput?.skill === 'string' && call.rawInput.skill.length > 0
+        && call.title === `Using skill: ${call.rawInput.skill}`) {
+        return { ...call, name: 'Skill' };
+      }
+      return call;
+    }),
     raw: Array.isArray(transcript.raw) ? JSON.stringify(transcript.raw) : transcript.raw,
   };
 }

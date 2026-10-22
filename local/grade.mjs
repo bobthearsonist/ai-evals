@@ -31,7 +31,9 @@ function gradeCheck(k, transcript, version2) {
 // without-arm must never) and the canary check.
 export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
   if (c.fixtures && transcript.transport === 'acp') {
-    const reads = transcript.toolCalls.filter((call) => ['Read', 'Glob', 'Grep', 'view', 'glob', 'rg'].includes(call.name));
+    const reads = transcript.toolCalls.filter((call) =>
+      ['Read', 'Glob', 'Grep', 'view', 'glob', 'grep', 'rg'].includes(call.name)
+      || ['read', 'search'].includes(call.kind));
     const denied = (call) => /permission.*denied|denied because|not allowed|permission.*refused/i.test(JSON.stringify(call.rawOutput ?? call.content ?? ''));
     if (reads.some(denied) && !reads.some((call) => call.status === 'completed' && !denied(call))) {
       return { score: null, checks: [], invalid: true, errors: [{ name: 'fixture-inputs', diagnostic: 'fixture file reads were refused without any successful read' }] };
@@ -40,7 +42,8 @@ export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
   const version2 = c.schemaVersion === 2;
   const checks = c.checks.map((k) => gradeCheck(k, transcript, version2));
   const validToolEvidence = Array.isArray(transcript.toolCalls) &&
-    transcript.toolCalls.every((call) => call && typeof call.name === 'string');
+    transcript.toolCalls.every((call) => call && (typeof call.name === 'string'
+      || (transcript.transport === 'acp' && call.name === undefined && ['read', 'search'].includes(call.kind))));
   const toolCalls = version2 && !validToolEvidence ? [] : transcript.toolCalls;
   const skillCalls = toolCalls.filter((t) => t.name === 'Skill').length;
   const triggerCheck = (passed) => version2 && !validToolEvidence
