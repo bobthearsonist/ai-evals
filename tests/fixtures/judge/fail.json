@@ -1,0 +1,5 @@
+{
+  "verdict": "fail",
+  "rationale": "The answer uses fix: rather than the required feat: type.",
+  "evidence": ["fix: repair the broken cache"]
+}
