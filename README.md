@@ -75,6 +75,11 @@ npx --no-install ai-evals run --config evals/evals.json --suite my-suite --model
 npx --no-install ai-evals run-all --config evals/evals.json
 ```
 
+Model IDs are adapter-specific ACP selection values, not interchangeable provider
+API IDs. The pinned Claude adapter exposes Haiku 5.5 as `haiku`; Copilot exposes
+it as `claude-haiku-5.5`. The requested value must be confirmed before prompting;
+an unavailable model fails rather than falling back to a default.
+
 `run` requires `--suite`. `run-all` discovers configured suites (or case folders)
 and prints the required session approval before doing paid work. A three-case,
 three-repeat, with/without suite plans 18 sessions. `--concurrency` bounds

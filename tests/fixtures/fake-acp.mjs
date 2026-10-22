@@ -19,7 +19,9 @@ app.onRequest(methods.agent.session.new, async () => ({
     id: 'model',
     name: 'Model',
     type: 'select',
-    options: [{ id: 'synthetic-model', name: 'Synthetic' }, { id: 'selected-model', name: 'Selected' }],
+    options: mode === 'grouped-models'
+      ? [{ group: 'Test models', options: [{ value: 'selected-model', name: 'Selected' }] }]
+      : [{ value: 'synthetic-model', name: 'Synthetic' }, { value: 'selected-model', name: 'Selected' }],
   }],
 }));
 
@@ -30,7 +32,7 @@ app.onRequest(methods.agent.session.setConfigOption, async ({ params }) => ({
     id: 'model',
     name: 'Model',
     type: 'select',
-    options: [{ id: params.value, name: 'Selected' }],
+    options: [{ value: params.value, name: 'Selected' }],
   }],
 }));
 

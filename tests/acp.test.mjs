@@ -192,6 +192,8 @@ test('model selection uses ACP session config options and execution validates re
   assert.equal(result.complete, true, JSON.stringify(result));
   assert.equal(result.model, 'selected-model');
   assert.ok(result.raw.some((event) => event.method === 'session/set_config_option'));
+  const selection = result.raw.find((event) => event.method === 'session/set_config_option' && event.direction === 'out');
+  assert.equal(selection.params.value, 'selected-model');
   await assert.rejects(
     executeAcp({
       command: 'x',
@@ -205,4 +207,16 @@ test('model selection uses ACP session config options and execution validates re
     }),
     /must come from buildAcpLaunch/,
   );
+});
+
+test('ACP model selection handles grouped values and refuses unavailable models before prompting', async () => {
+  const grouped = await executeAcp(fakeOptions('grouped-models', { model: 'selected-model' }));
+  assert.equal(grouped.complete, true, JSON.stringify(grouped.errors));
+  assert.equal(grouped.model, 'selected-model');
+  const unavailable = await executeAcp(fakeOptions('normal', { model: 'unavailable-model' }));
+  assert.equal(unavailable.complete, false);
+  assert.match(unavailable.errors.join('; '), /did not expose a selectable model/);
+  assert.equal(unavailable.raw.some((event) => event.method === 'session/prompt'), false);
+  await assertProcessStopped(grouped);
+  await assertProcessStopped(unavailable);
 });

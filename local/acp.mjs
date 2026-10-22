@@ -212,7 +212,7 @@ async function executeConfiguredAcp(options, environment) {
     if (options.model && model !== options.model) {
       const modelOption = created.configOptions?.find((option) => option.category === 'model' || option.id === 'model');
       const knownValues = modelOption?.options?.flatMap((entry) => ('options' in entry ? entry.options : [entry])) ?? [];
-      if (modelOption && knownValues.some((option) => option.id === options.model)) {
+      if (modelOption && knownValues.some((option) => option.value === options.model)) {
         const configured = await request(methods.agent.session.setConfigOption, {
           sessionId,
           configId: modelOption.id,
