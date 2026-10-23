@@ -8,7 +8,9 @@ included here.
 Requires Node.js 22.12+. **ACP is the only supported transport** for Claude
 and Copilot, including the library API, CLI and multi-runner.
 Native candidate profiles use temporary homes, explicit read-only tools and
-controlled skill workspaces. Live native ACP acceptance is still pending.
+controlled skill workspaces. Bounded Claude ACP smoke and judge runs have
+completed in the consuming repositories; this is not cross-client acceptance
+or judge calibration.
 SDK/plugin-eval execution and replay code
 have been removed; there is no transport selector or fallback.
 ACP is not an isolation guarantee. Gherkin and compatibility JSON use the same
@@ -17,9 +19,9 @@ deterministic policy; AI judging is a separate, explicitly approved assessment.
 ## Install
 
 This repository is public; installation does not require GitHub credentials.
-After publication, pin a reviewed commit or tag in each consumer, rather than
-following a moving branch. Replace the placeholder below; historical tags do
-not include the unpublished ACP/Gherkin migration:
+Pin a reviewed commit from `main` or a tag in each consumer, rather than
+following a moving branch. The ACP/Gherkin engine is on `main`; historical
+tags may predate it. Replace the placeholder below:
 
 ```powershell
 npm install --save-dev git+https://github.com/bobthearsonist/ai-evals.git#REVIEWED_COMMIT
