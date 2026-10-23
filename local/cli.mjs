@@ -20,12 +20,12 @@ if (process.argv[2] === 'run-all') {
   process.exit(process.exitCode ?? 0);
 }
 if (process.argv.some((a) => a === '--runners' || a.startsWith('--runners='))
-  && !['validate', 'regrade', 'judge', 'report', 'migrate'].includes(process.argv[2])) {
+  && !['validate', 'regrade', 'judge', 'report'].includes(process.argv[2])) {
   await import('./run-all.mjs');
   process.exit(process.exitCode ?? 0);
 }
 if (process.argv.includes('--help') || !process.argv[2]) {
-  console.log(`usage: ai-evals <validate|preflight|smoke|run|run-all|regrade|judge|report|migrate> [arguments]\n\nCommands:\n  validate --suite NAME                 Validate cases and policy offline\n  preflight --client ID --model ID      Check ACP readiness without inference\n  smoke --suite NAME [--case ID ...]    Run selected cases once, with skill\n  run --suite NAME [--runs N]            Run paired with/without evaluation\n  run-all [--suite NAME | --suites A,B] Run selected suites and clients\n  regrade RUN_DIR                        Regrade archived traces offline\n  judge RUN_DIR --client ID --model ID  Assess archived answers (requires --rubric)\n  report RUN_DIR [--answer]              Show per-trace checks and Skill calls\n  migrate SRC_DIR --out DIR              Convert JSON cases to Gherkin\n\nCommon flags: --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH\n              --client ID | --runners ID[,ID] --model ID --exe PATH --timeout-seconds N --json\n              --dry-run --approve-sessions N --acp-profile PATH\nRun flags: --suite NAME --case ID (repeatable for smoke) --runs N --concurrency 1..8\nrun-all flags: --suites A,B --claude-model ID --copilot-model ID --opencode-model ID\n              --claude-exe PATH --copilot-exe PATH --opencode-exe PATH\n              --claude-acp-profile PATH --copilot-acp-profile PATH\nRegrade flags: --policy recorded|current --suite NAME\nJudge flags: --rubric PATH --case ID (repeatable) --approve-sessions N --dry-run\nReport flag: --answer; migrate flag: --out DIR\nExit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.`);
+  console.log(`usage: ai-evals <validate|preflight|smoke|run|run-all|regrade|judge|report> [arguments]\n\nCommands:\n  validate --suite NAME                 Validate cases and policy offline\n  preflight --client ID --model ID      Check ACP readiness without inference\n  smoke --suite NAME [--case ID ...]    Run selected cases once, with skill\n  run --suite NAME [--runs N]            Run paired with/without evaluation\n  run-all [--suite NAME | --suites A,B] Run selected suites and clients\n  regrade RUN_DIR                        Regrade archived traces offline\n  judge RUN_DIR --client ID --model ID  Assess archived answers (requires --rubric)\n  report RUN_DIR [--answer]              Show per-trace checks and Skill calls\n\nCommon flags: --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH\n              --client ID | --runners ID[,ID] --model ID --exe PATH --timeout-seconds N --json\n              --dry-run --approve-sessions N --acp-profile PATH\nRun flags: --suite NAME --case ID (repeatable for smoke) --runs N --concurrency 1..8\nrun-all flags: --suites A,B --claude-model ID --copilot-model ID --opencode-model ID\n              --claude-exe PATH --copilot-exe PATH --opencode-exe PATH\n              --claude-acp-profile PATH --copilot-acp-profile PATH\nRegrade flags: --policy recorded|current --suite NAME\nJudge flags: --rubric PATH --case ID (repeatable) --approve-sessions N --dry-run\nReport flag: --answer\nExit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.`);
   process.exit(0);
 }
 const { values, positionals } = parseArgs({
@@ -49,29 +49,12 @@ const { values, positionals } = parseArgs({
     policy: { type: 'string' },
     'acp-profile': { type: 'string' },
     rubric: { type: 'string' },
-    out: { type: 'string' },
     json: { type: 'boolean', default: false },
     answer: { type: 'boolean', default: false },
   },
 });
 
 const command = positionals[0];
-if (command === 'migrate') {
-  if (positionals.length !== 2 || !values.out) throw new Error('usage: ai-evals migrate <srcDir> --out <dir>');
-  const { migrateJsonCases } = await import('./migrate.mjs');
-  const converted = migrateJsonCases(resolve(positionals[1]));
-  const outDir = resolve(values.out);
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, 'cases.feature'), converted.feature);
-  for (const sample of converted.samples) {
-    if (sample.fileName !== resolve(sample.fileName).split(/[\\/]/).at(-1)) throw new Error(`invalid migration sample filename: ${sample.fileName}`);
-    writeFileSync(join(outDir, sample.fileName), typeof sample.content === 'string'
-      ? sample.content : `${JSON.stringify(sample.content, null, 2)}\n`);
-  }
-  if (values.json) console.log(JSON.stringify({ outDir, samples: converted.samples.map((sample) => sample.fileName), warnings: converted.warnings }, null, 2));
-  else console.log(`migrated ${converted.samples.length} case(s) to ${outDir}${converted.warnings.length ? `\nWarnings:\n- ${converted.warnings.join('\n- ')}` : ''}`);
-  process.exit(0);
-}
 if (command === 'report') {
   if (positionals.length !== 2) throw new Error('usage: ai-evals report <runDir> [--answer] [--json]');
   const result = reportRun(resolve(positionals[1]), { includeAnswer: values.answer });
@@ -79,7 +62,6 @@ if (command === 'report') {
   process.exit(0);
 }
 if (values.answer && command !== 'report') throw new Error('--answer is only supported by report');
-if (values.out && command !== 'migrate') throw new Error('--out is only supported by migrate');
 const config = resolveConfig({ configPath: values.config, flags: { skillRoot: values['skill-root'], casesDir: values['cases-dir'], outputDir: values['output-dir'], resultsDir: values['results-dir'] } });
 const SKILL_ROOTS = config.skillsRoots;
 const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => existsSync(join(p, 'SKILL.md')));

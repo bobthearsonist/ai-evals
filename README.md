@@ -78,7 +78,6 @@ npx --no-install ai-evals run-all --config evals/evals.json
 npx --no-install ai-evals smoke --config evals/evals.json --suite my-suite --case first --case second --json
 npx --no-install ai-evals report evals/.work/local-runs/<run>
 npx --no-install ai-evals report evals/.work/local-runs/<run> --answer --json
-npx --no-install ai-evals migrate legacy-cases --out cases/my-suite
 ```
 
 Model IDs are adapter-specific ACP selection values, not interchangeable provider
@@ -244,10 +243,6 @@ npx --no-install ai-evals regrade evals/.work/local-runs/<run> --config evals/ev
 ACP parser and grader to show PASS/FAIL check outcomes, reasons, trace validity,
 and Skill tool-call counts. Add `--answer` to include captured final answers or
 `--json` for machine-readable detail. It makes no model calls.
-
-`migrate SRC_DIR --out DIR` converts legacy JSON cases to `cases.feature` and
-sample sidecars using the engine's JSON-to-Gherkin migration helper. Review the
-reported warnings and generated cases before using them.
 
 Offline regrading uses the shared transcript grader and makes no model calls.
 It defaults to the archived policy, so later case edits cannot silently change

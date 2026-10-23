@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -97,23 +97,6 @@ test('smoke accepts repeated cases and validate uses concise output unless --jso
     '--case', 'explicit-positive', '--case', 'implicit-positive', '--dry-run', '--json']);
   assert.equal(multiRunner.status, 0, multiRunner.stderr);
   assert.equal(JSON.parse(multiRunner.stdout).plannedSessions, 2);
-});
-
-test('migrate writes the generated feature and JSON sample sidecars', () => {
-  const source = resolve(import.meta.dirname, 'fixtures', 'migrate', 'legacy-cases');
-  const out = join(import.meta.dirname, `.cli-migrate-${process.pid}`);
-  rmSync(out, { recursive: true, force: true });
-  try {
-    const result = run(['migrate', source, '--out', out, '--json']);
-    assert.equal(result.status, 0, result.stderr);
-    const converted = JSON.parse(result.stdout);
-    assert.equal(converted.samples.length, 1);
-    assert.match(readFileSync(join(out, 'cases.feature'), 'utf8'), /Feature:/);
-    const sample = JSON.parse(readFileSync(join(out, converted.samples[0]), 'utf8'));
-    assert.equal(sample.caseId, 'my-case');
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
 });
 
 test('runner selection rejects unsupported, duplicate or ambiguous options before probing', () => {
