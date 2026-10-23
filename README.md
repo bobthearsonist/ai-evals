@@ -342,10 +342,14 @@ eligible session count without inference or assessment writes.
 Assessments record input/rubric hashes, runtime/model, raw output, usage and
 validation status under a uniquely named `assessments` artifact. They never
 overwrite candidate traces, `normalized.json`, deterministic scores or
-history. These assessments are advisory: no judge accuracy calibration,
-cross-provider quality result, or live judge acceptance is claimed.
-The built-in judge profile is Claude-only and source-verified for its pinned
-adapter, not live-audited. Other native judge runtimes remain unsupported.
+history. These assessments are advisory. A bounded live check completed on
+2026-10-23: one Claude `haiku` candidate and one judge session for each of nine
+mapped rubrics; all nine produced valid, exact-evidence assessments (eight
+`pass`, one `fail`). This verifies the exercised archive-to-judge execution
+path only, not judge accuracy calibration or cross-provider quality. The
+built-in judge profile is Claude-only and source-verified for its pinned
+adapter, not independently live-audited. Other native judge runtimes remain
+unsupported.
 It uses the same package-pinned adapter and sterile home as candidate sessions,
 with no tools or skills and no project settings. It requires adapter version
 `0.94.0` and confirmation of the requested model before the prompt is sent.
