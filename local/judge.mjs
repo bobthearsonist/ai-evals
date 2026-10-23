@@ -118,6 +118,18 @@ export function buildJudgePrompt({ answer, rubric }) {
   ].join('\n');
 }
 
+function normalizeEvidenceQuote(value) {
+  let quote = value.trim();
+  const wrappers = [['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’']];
+  for (const [open, close] of wrappers) {
+    if (quote.startsWith(open) && quote.endsWith(close) && quote.length >= open.length + close.length) {
+      quote = quote.slice(open.length, -close.length).trim();
+      break;
+    }
+  }
+  return quote;
+}
+
 function validateJudgement(text, answerText) {
   if (typeof text !== 'string' || text.trim().length === 0) {
     return { reason: 'judge execution returned empty output' };
@@ -137,10 +149,12 @@ function validateJudgement(text, answerText) {
   if ((parsed.verdict === 'pass' || parsed.verdict === 'fail') && parsed.evidence.length === 0) {
     return { reason: 'pass and fail judgements require evidence' };
   }
-  for (const quote of parsed.evidence) {
+  const evidence = parsed.evidence.map(normalizeEvidenceQuote);
+  if (evidence.some((quote) => !quote)) return { reason: 'pass and fail judgements require non-empty evidence' };
+  for (const quote of evidence) {
     if (!answerText.includes(quote)) return { reason: 'evidence quote does not occur exactly in the candidate answer' };
   }
-  return { judgement: parsed };
+  return { judgement: { ...parsed, evidence } };
 }
 
 function validateExecution(execution, answerText, model) {

@@ -78,6 +78,17 @@ test('judge orchestration builds the real Claude profile without forbidden metad
   assert.equal(result.status, 'judged', result.reason);
 });
 
+test('normalizes wrapped evidence before exact-match verification', async () => {
+  for (const wrapped of ['  "feat: add the requested feature"  ', "'feat: add the requested feature'", '“feat: add the requested feature”', ' ‘feat: add the requested feature’ ']) {
+    const execution = await executeFor('pass.json', {
+      finalText: JSON.stringify({ verdict: 'pass', rationale: 'Matches.', evidence: [wrapped] }),
+    });
+    const result = await judgeAnswer(args({ execute: stubExecute(execution) }));
+    assert.equal(result.status, 'judged', result.reason);
+    assert.deepEqual(result.judgement.evidence, ['feat: add the requested feature']);
+  }
+});
+
 test('accepts a valid fail with exact evidence', async () => {
   const execution = await executeFor('fail.json');
   const answer = { ...sampleAnswer, text: 'fix: repair the broken cache' };
