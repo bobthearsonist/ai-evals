@@ -17,7 +17,7 @@ const trace = (answer, { skill = true, done = true } = {}) => line({
 });
 
 const c = {
-  id: 'k', shouldTrigger: true,
+  schemaVersion: 2, id: 'k', prompt: 'Write a commit.', shouldTrigger: true,
   checks: [{ type: 'regex', pattern: '^feat: ', flags: 'm', name: 'h' }, { type: 'not_regex', pattern: 'oops', name: 'n' }],
 };
 

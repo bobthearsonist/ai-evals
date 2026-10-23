@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { executeAcp } from './acp.mjs';
 import { buildAcpLaunch } from './acp-profiles.mjs';
 import { checkAcpRuntime } from './acp-isolation.mjs';
-import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities } from './contract.mjs';
+import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities, validateCase } from './contract.mjs';
 import { plannedSessions, prepareWorkspace } from './workspace.mjs';
 import { gradeTranscript, verdict } from './grade.mjs';
 
@@ -151,6 +151,10 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       if (!Number.isInteger(runs) || runs < 1 || !['none', 'with-without'].includes(ablation)) throw new Error('invalid ACP schedule');
       const selected = suite.filter((c) => !caseId || c.id === caseId);
       if (!selected.length) throw new Error('no ACP cases selected');
+      for (const c of selected) {
+        const problems = validateCase(c);
+        if (problems.length) throw new Error(`invalid ACP case ${c?.id}: ${problems.join('; ')}`);
+      }
       const problems = selected.flatMap((c) => [
         ...validateCapabilities(c, this.capabilities),
         ...(c.checks.some((check) => check.type === 'file_exists') ? ['file_exists requires fileSnapshot capability'] : []),

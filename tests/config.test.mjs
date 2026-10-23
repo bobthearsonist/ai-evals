@@ -49,9 +49,11 @@ test('discovers evals/evals.json from nested working directories', () => {
   }
 });
 
-test('schemaVersion is optional but must be supported', () => {
-  const ok = { id: 'x', prompt: 'p', shouldTrigger: false, checks: [{ type: 'regex', pattern: 'a' }] };
+test('compiled cases require schemaVersion 2 and named checks', () => {
+  const ok = { schemaVersion: 2, id: 'x', prompt: 'p', shouldTrigger: false, checks: [{ name: 'answer', type: 'regex', pattern: 'a' }] };
   assert.deepEqual(validateCase(ok), []);
-  assert.deepEqual(validateCase({ ...ok, schemaVersion: 1 }), []);
-  assert.ok(validateCase({ ...ok, schemaVersion: 2 }).length > 0);
+  for (const schemaVersion of [undefined, 1, 3]) {
+    assert.ok(validateCase({ ...ok, schemaVersion }).length > 0);
+  }
+  assert.ok(validateCase({ ...ok, checks: [{ type: 'regex', pattern: 'a' }] }).length > 0);
 });

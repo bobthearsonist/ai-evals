@@ -44,8 +44,8 @@ function setup(t) {
   writeFileSync(join(fixtures, 'input.txt'), 'fixture');
   return { root, source, fixtures, options: {
     outDir: join(root, 'prepared'), skillName: 'demo', skillSourceDir: source, fixturesDir: fixtures,
-    cases: [{ id: 'greeting', prompt: 'Read {{fixtures}}', fixtures: true, shouldTrigger: false,
-      checks: [{ type: 'regex', pattern: 'hello' }] }],
+    cases: [{ schemaVersion: 2, id: 'greeting', prompt: 'Read {{fixtures}}', fixtures: true, shouldTrigger: false,
+      checks: [{ name: 'greeting', type: 'regex', pattern: 'hello' }] }],
   } };
 }
 
@@ -69,7 +69,7 @@ test('workspace rejects invalid cases, missing fixtures and unsupported filesyst
   assert.throws(() => prepareWorkspace({ ...options, cases: [{}] }), /invalid|id|prompt/);
   assert.throws(() => prepareWorkspace({ ...options, fixturesDir: null }), /fixtures directory/);
   assert.throws(() => prepareWorkspace({ ...options, cases: [{
-    ...options.cases[0], checks: [{ type: 'file_exists', path: 'result.txt' }],
+    ...options.cases[0], checks: [{ name: 'result-file', type: 'file_exists', path: 'result.txt' }],
   }] }), /does not support file_exists/);
 });
 

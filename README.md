@@ -13,8 +13,8 @@ completed in the consuming repositories; this is not cross-client acceptance
 or judge calibration.
 SDK/plugin-eval execution and replay code
 have been removed; there is no transport selector or fallback.
-ACP is not an isolation guarantee. Gherkin and compatibility JSON use the same
-deterministic policy; AI judging is a separate, explicitly approved assessment.
+ACP is not an isolation guarantee. Gherkin compiles to a shared deterministic
+policy; AI judging is a separate, explicitly approved assessment.
 
 ## Install
 
@@ -117,52 +117,24 @@ Keep evaluation data outside distributed skill/plugin payloads.
 
 ## Case format
 
-Author new suites in Gherkin with sample sidecars (see below). The engine's
-three demo cases also use this format. JSON remains a compatibility input;
-each JSON file holds one case. Version 1 remains compatible:
+Suites are authored only in Gherkin with sample sidecars (see below).
+JSON case definitions and schema-v1 case compatibility have been removed.
+JSON configuration, sample sidecars, rubrics, protocol records and immutable
+compiled policy snapshots remain supported; these are not authored cases.
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "positive",
-  "prompt": "Use my-skill and include the word hello.",
-  "shouldTrigger": true,
-  "checks": [{ "name": "greeting", "type": "regex", "pattern": "hello" }],
-  "samples": { "pass": ["hello"], "fail": ["goodbye"] }
-}
-```
-
-Checks: `regex`, `not_regex`, `file_exists`, `tool_order`. Optional
-`"fixtures": true` stages the suite's `fixtures` directory for each session;
-use `{{fixtures}}` in the prompt to refer to it. Schema version 1 is
-supported; omitted versions remain compatible.
-
-Version 2 adds `contains`, `not_contains`, `starts_with`, `max_length`
+The normalized schema-v2 contract supports `regex`, `not_regex`,
+`file_exists`, `tool_order`, `contains`, `not_contains`, `starts_with`, `max_length`
 (inclusive), `length_less_than` (exclusive), `conventional_header`, and
 `lowercase_initial`. Text operations are case-sensitive and untrimmed;
 lengths count Unicode code points. Targets are `last_message` (default),
 `trace`, or `commit_subject`. The latter extracts one conventional subject
 from plain text, inline backticks or fenced output; ambiguous subjects fail.
-V2 missing required evidence is invalid, not skipped. V2 `file_exists` is
-refused until filesystem snapshots are implemented. Existing v1
-`file_exists` replay behavior is unchanged.
+Missing required evidence is invalid, not skipped. `file_exists` is refused
+until filesystem snapshots are implemented. Fixture setup stages the suite's
+`fixtures` directory; use `{{fixtures}}` in the prompt to refer to it.
 
-```json
-{
-  "schemaVersion": 2,
-  "id": "short-subject",
-  "prompt": "Write a commit line.",
-  "shouldTrigger": true,
-  "checks": [
-    { "name": "header", "type": "conventional_header", "target": "commit_subject", "types": ["feat", "fix"] },
-    { "name": "short", "type": "length_less_than", "target": "commit_subject", "limit": 72 }
-  ]
-}
-```
-
-Suites can mix `.json` and `.feature` files. The official Gherkin parser and
-Cucumber Expressions compile features to exactly the same v2 case/check
-objects. IDs must be unique across the entire suite, including expanded
+The official Gherkin parser and Cucumber Expressions compile `.feature` files
+to schema-v2 case/check objects. IDs must be unique across the entire suite, including expanded
 Scenario Outlines. Handwritten examples are offline sample sidecars
 (`*.samples.json`); they never appear in the model prompt.
 

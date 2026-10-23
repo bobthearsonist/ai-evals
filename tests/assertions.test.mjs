@@ -101,15 +101,6 @@ test('v2 validation enforces check names, unique IDs and valid regular expressio
 });
 
 test('validation errors identify the case check by index and name', () => {
-  const legacy = {
-    schemaVersion: 1,
-    id: 'legacy',
-    prompt: 'Legacy prompt',
-    shouldTrigger: false,
-    checks: [{ type: 'regex', name: 'missing-pattern' }],
-  };
-  assert.match(validateCase(legacy)[0], /checks\[0\] \(missing-pattern\): check needs pattern/);
-
   const current = v2([check('regex', {}, 'missing-pattern')]);
   assert.equal(validateCase(current).length, 1);
   assert.match(validateCase(current)[0], /checks\[0\] \(missing-pattern\).*pattern/);
@@ -138,21 +129,11 @@ test('v2 grading scores available deterministic checks and preserves sample fail
   assert.equal(gradeTranscript(c, transcript('an answer')).score, 1);
 });
 
-test('v1 grading retains regex scoring and skipped file checks', () => {
-  const c = {
-    schemaVersion: 1,
-    id: 'legacy',
-    prompt: 'Legacy prompt',
-    shouldTrigger: false,
-    checks: [
-      { type: 'regex', pattern: '^feat:', name: 'header' },
-      { type: 'file_exists', path: 'output.txt' },
-    ],
-  };
-  assert.deepEqual(validateCase(c), []);
-  assert.deepEqual(gradeSample(c, 'feat: add'), { passed: true, failed: [] });
-  const graded = gradeTranscript(c, transcript('feat: add'));
-  assert.equal(graded.score, 1);
-  assert.equal(graded.checks[1].skipped, true);
-  assert.equal('invalid' in graded, false);
+test('grading refuses obsolete or unversioned cases rather than silently applying compatibility policy', () => {
+  for (const schemaVersion of [undefined, 1]) {
+    const c = { ...v2([check('regex', { pattern: '^feat:' }, 'header')]), schemaVersion };
+    assert.notDeepEqual(validateCase(c), []);
+    assert.throws(() => gradeSample(c, 'feat: add'), /only compiled schemaVersion 2/);
+    assert.throws(() => gradeTranscript(c, transcript('feat: add')), /only compiled schemaVersion 2/);
+  }
 });

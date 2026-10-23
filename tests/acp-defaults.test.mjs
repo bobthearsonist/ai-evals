@@ -99,9 +99,17 @@ test('passing smoke and paired runs exit zero for single and multiple runners', 
   const { root, profile } = setup(t);
   const suiteDir = join(root, 'cases', 'passing');
   mkdirSync(suiteDir, { recursive: true });
-  writeFileSync(join(suiteDir, 'greeting.json'), JSON.stringify({
-    schemaVersion: 2, id: 'greeting', prompt: 'Say hello.', shouldTrigger: false,
-    checks: [{ name: 'greeting', type: 'contains', value: 'hello world' }],
+  writeFileSync(join(suiteDir, 'greeting.feature'), `Feature: Passing greeting
+  @case:greeting @should-not-trigger
+  Scenario: Greet the user
+    When the user asks:
+      """
+      Say hello.
+      """
+    Then the response contains "hello world" named "greeting"
+`);
+  writeFileSync(join(suiteDir, 'greeting.samples.json'), JSON.stringify({
+    caseId: 'greeting', pass: ['hello world'], fail: ['goodbye'],
   }));
   const passingConfig = join(root, 'evals.json');
   writeFileSync(passingConfig, JSON.stringify({

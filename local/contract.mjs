@@ -60,36 +60,10 @@ export function listRunners() {
 
 // Neutral suite case shared by every adapter.
 export function validateCase(c) {
-  const problems = [];
   if (!c || typeof c !== 'object') return ['case must be an object'];
-  if (c.schemaVersion === 2) return validateV2Case(c);
-  if (c.schemaVersion !== undefined && c.schemaVersion !== 1) problems.push(`unsupported schemaVersion ${c.schemaVersion}; this harness reads 1 or 2`);
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(c.id ?? '')) problems.push('id must be kebab-case');
-  if (typeof c.prompt !== 'string' || !c.prompt.trim()) problems.push('prompt required');
-  if (typeof c.shouldTrigger !== 'boolean') problems.push('shouldTrigger must be boolean');
-  if (!Array.isArray(c.checks) || c.checks.length === 0) problems.push('checks must be a non-empty array');
-  if (c.fixtures !== undefined && typeof c.fixtures !== 'boolean') problems.push('fixtures must be boolean');
-  if (c.samples !== undefined) {
-    const s = c.samples;
-    if (!s || !Array.isArray(s.pass) || !Array.isArray(s.fail) || ![...s.pass, ...s.fail].every((x) => typeof x === 'string')) problems.push('samples must be { pass: string[], fail: string[] }');
-  }
-  for (const [index, check] of (Array.isArray(c.checks) ? c.checks : []).entries()) {
-    const name = typeof check?.name === 'string' ? ` (${check.name})` : '';
-    const label = `checks[${index}]${name}`;
-    if (!check || typeof check !== 'object') {
-      problems.push(`${label}: check must be an object`);
-      continue;
-    }
-    if (!['regex', 'not_regex', 'file_exists', 'tool_order'].includes(check.type)) problems.push(`${label}: unsupported check type ${check.type}`);
-    if (['regex', 'not_regex'].includes(check.type) && typeof check.pattern !== 'string') problems.push(`${label}: check needs pattern`);
-    if (check.type === 'file_exists' && typeof check.path !== 'string') problems.push(`${label}: file_exists needs path`);
-    if (check.type === 'tool_order' && (typeof check.before !== 'string' || typeof check.after !== 'string')) problems.push(`${label}: tool_order needs before and after`);
-  }
-  return problems;
+  return validateV2Case(c);
 }
 
-// Version 2 is deliberately stricter than the legacy v1 contract. Keep the v1
-// checks above unchanged so archived suites retain their historical validation.
 export function validateV2Case(c) {
   const problems = validateV2CaseSchema(c).map((problem) => {
     const match = /^\/checks\/(\d+)(.*)$/.exec(problem);
@@ -121,7 +95,6 @@ export function validateCheck(check) {
 // paid sessions, rather than allowing a transcript grader to skip unavailable evidence.
 export function validateCapabilities(c, capabilities = {}) {
   const problems = [];
-  if (c?.schemaVersion !== 2) return problems;
   for (const [index, check] of (Array.isArray(c.checks) ? c.checks : []).entries()) {
     if (check?.type === 'file_exists' && capabilities.fileSnapshot !== true) {
       problems.push(`checks[${index}] (${check.name}): file_exists requires fileSnapshot capability`);
@@ -138,22 +111,15 @@ export function validateCapabilities(c, capabilities = {}) {
 
 // Applies a case's text checks to a hand-written answer; used to validate graders against known samples.
 export function gradeSample(c, text) {
-  const failed = [];
-  if (c.schemaVersion === 2) {
-    const transcript = typeof text === 'string' ? { finalText: text } : text;
-    const checks = c.checks.map((check) => evaluateCheck(check, transcript));
-    const errors = checks.filter((check) => check.passed === null)
-      .map((check) => ({ name: check.name, diagnostic: check.diagnostic ?? 'required evidence is missing' }));
-    return {
-      passed: errors.length === 0 && checks.every((check) => check.passed),
-      failed: checks.filter((check) => check.passed === false).map((check) => check.name),
-      ...(errors.length ? { invalid: true, errors } : { invalid: false, errors: [] }),
-    };
-  }
-  for (const k of c.checks) {
-    if (k.type !== 'regex' && k.type !== 'not_regex') continue;
-    const hit = new RegExp(k.pattern, k.flags ?? '').test(text);
-    if (k.type === 'regex' ? !hit : hit) failed.push(k.name ?? k.pattern);
-  }
-  return { passed: failed.length === 0, failed };
+  if (c.schemaVersion !== 2) throw new Error('only compiled schemaVersion 2 cases are supported');
+  const transcript = typeof text === 'string' ? { finalText: text } : text;
+  const checks = c.checks.map((check) => evaluateCheck(check, transcript));
+  const errors = checks.filter((check) => check.passed === null)
+    .map((check) => ({ name: check.name, diagnostic: check.diagnostic ?? 'required evidence is missing' }));
+  return {
+    passed: errors.length === 0 && checks.every((check) => check.passed),
+    failed: checks.filter((check) => check.passed === false).map((check) => check.name),
+    invalid: errors.length > 0,
+    errors,
+  };
 }

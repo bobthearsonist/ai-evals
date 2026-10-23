@@ -169,13 +169,14 @@ function validateFixtures(suiteDir, c) {
 export function loadSuite(suiteDir) {
   const files = readdirSync(suiteDir).sort();
   const cases = [];
-  const featureIds = new Set();
   const ids = new Map();
-  for (const file of files.filter((name) => name.endsWith('.feature') || (name.endsWith('.json') && !name.endsWith('.samples.json')))) {
+  const obsolete = files.find((name) => name.endsWith('.json') && !name.endsWith('.samples.json'));
+  if (obsolete) fail(join(suiteDir, obsolete), undefined, 'JSON case definitions are unsupported; author cases in .feature files');
+  for (const file of files.filter((name) => name.endsWith('.feature'))) {
     const uri = join(suiteDir, file);
     let loaded;
     try {
-      loaded = file.endsWith('.feature') ? compileFeature(readFileSync(uri, 'utf8'), { uri }) : [JSON.parse(readFileSync(uri, 'utf8'))];
+      loaded = compileFeature(readFileSync(uri, 'utf8'), { uri });
     } catch (error) {
       if (error.message.startsWith(uri)) throw error;
       fail(uri, undefined, error.message);
@@ -184,10 +185,7 @@ export function loadSuite(suiteDir) {
       validate(c, uri, c.source);
       if (ids.has(c.id)) fail(uri, c.source, `duplicate case id ${c.id}; first defined in ${ids.get(c.id)}`);
       ids.set(c.id, uri);
-      if (file.endsWith('.feature')) {
-        featureIds.add(c.id);
-        if (c.fixtures) validateFixtures(suiteDir, c);
-      }
+      if (c.fixtures) validateFixtures(suiteDir, c);
       cases.push(c);
     }
   }
@@ -210,7 +208,7 @@ export function loadSuite(suiteDir) {
     validate(c, uri);
   }
   for (const c of cases) {
-    if (featureIds.has(c.id) && !samples.has(c.id)) fail(c.source.uri, c.source, `feature case ${c.id} requires a *.samples.json sidecar`);
+    if (!samples.has(c.id)) fail(c.source.uri, c.source, `feature case ${c.id} requires a *.samples.json sidecar`);
   }
   return cases;
 }

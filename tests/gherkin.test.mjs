@@ -36,7 +36,7 @@ const withSuite = (files, run) => {
 };
 const sample = (caseId = 'hello') => ({ caseId, pass: ['hello'], fail: ['no'] });
 
-test('official parser compiles the pilot to the same v2 JSON policy', () => {
+test('official parser compiles Gherkin to the normalized v2 policy', () => {
   const [c] = compile(feature);
   const { source, ...plan } = c;
   assert.deepEqual(plan, {
@@ -57,11 +57,10 @@ test('official parser compiles the pilot to the same v2 JSON policy', () => {
   assert.equal(source.steps[1].phase, 'Outcome');
 });
 
-test('loadSuite keeps legacy JSON shape and attaches offline-only feature samples', () => {
-  const legacy = { id: 'legacy', prompt: 'Old prompt', shouldTrigger: false, checks: [{ type: 'regex', pattern: 'ok' }] };
-  withSuite({ 'legacy.json': legacy, 'commit.feature': feature, 'commit.samples.json': samples }, (dir) => {
+test('loadSuite attaches offline-only feature samples', () => {
+  withSuite({ 'commit.feature': feature, 'commit.samples.json': samples }, (dir) => {
     const loaded = loadSuite(dir);
-    assert.deepEqual(loaded.find((c) => c.id === 'legacy'), legacy);
+    assert.equal(loaded.length, 1);
     const c = loaded.find((candidate) => candidate.id === samples.caseId);
     assert.deepEqual(c.samples, { pass: samples.pass, fail: samples.fail });
     assert.ok(!c.prompt.includes(samples.pass[0]));
@@ -73,17 +72,6 @@ test('fixture feature sample labels agree with the shared deterministic evaluato
   const [c] = loadSuite(fixtureDir);
   for (const text of c.samples.pass) assert.equal(gradeSample(c, text).passed, true, text);
   for (const text of c.samples.fail) assert.equal(gradeSample(c, text).passed, false, text);
-});
-
-test('equivalent v2 JSON and feature suites have identical neutral policy', () => {
-  const [{ source, ...json }] = compile(feature);
-  withSuite({ 'case.json': json }, (jsonDir) => withSuite({
-    'case.feature': feature,
-    'case.samples.json': samples,
-  }, (featureDir) => {
-    const [{ source: ignoredSource, samples: ignoredSamples, ...policy }] = loadSuite(featureDir);
-    assert.deepEqual(policy, loadSuite(jsonDir)[0]);
-  }));
 });
 
 test('controlled text, length, tables and named regex vocabulary emits neutral checks', () => {
@@ -222,10 +210,13 @@ for (const [name, source, message] of [
   });
 }
 
-test('mixed-format duplicate IDs fail before loading samples', () => {
-  const json = { id: 'hello', prompt: 'Hello', shouldTrigger: true, checks: [{ type: 'regex', pattern: 'hello' }] };
-  withSuite({ 'case.feature': minimal(), 'case.json': json, 'case.samples.json': sample() },
-    (dir) => assert.throws(() => loadSuite(dir), /duplicate case id hello/));
+test('JSON case files are refused, alone or mixed with features', () => {
+  const [json] = compile(minimal());
+  for (const files of [{ 'case.json': json }, {
+    'case.feature': minimal(), 'case.json': json, 'case.samples.json': sample(),
+  }]) {
+    withSuite(files, (dir) => assert.throws(() => loadSuite(dir), /case\.json:1:1: JSON case definitions are unsupported/));
+  }
 });
 
 test('multiple feature files cannot declare the same stable ID', () => {
@@ -245,7 +236,7 @@ test('literal whitespace and Unicode in prompt and text checks are not normalize
   assert.equal(c.checks[0].value, '  😀 café  ');
 });
 
-test('empty text values and signed length integers retain the v2 JSON contract semantics', () => {
+test('empty text values and signed length integers retain normalized contract semantics', () => {
   const [c] = compile(minimal('Then the response contains ""\n    And the response is at most -1 characters'));
   assert.equal(c.checks[0].value, '');
   assert.equal(c.checks[1].limit, -1);
@@ -265,14 +256,6 @@ test('sample files reject missing, orphaned, duplicate, malformed and empty samp
   ]) {
     withSuite({ 'case.feature': minimal(), ...files }, (dir) => assert.throws(() => loadSuite(dir), message));
   }
-});
-
-test('legacy inline samples stay intact and cannot also have a sidecar', () => {
-  const json = { id: 'hello', prompt: 'Hello', shouldTrigger: true, checks: [{ type: 'regex', pattern: 'hello' }], samples: sample() };
-  delete json.samples.caseId;
-  withSuite({ 'case.json': json }, (dir) => assert.deepEqual(loadSuite(dir)[0], json));
-  withSuite({ 'case.json': json, 'case.samples.json': sample() },
-    (dir) => assert.throws(() => loadSuite(dir), /duplicate samples/));
 });
 
 test('no arbitrary suite size cap is introduced', () => {

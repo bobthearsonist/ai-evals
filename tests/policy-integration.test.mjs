@@ -103,8 +103,17 @@ test('expanded outline approval is computed before probing any executable', () =
 test('unsupported v2 filesystem evidence is refused before any selected suite runs', () => temporary((root) => {
   const dir = join(root, 'cases', 'unsupported');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'case.json'), JSON.stringify({
-    ...definition, checks: [{ name: 'result-file', type: 'file_exists', path: 'result.txt' }],
+  writeFileSync(join(dir, 'case.feature'), `Feature: Unsupported filesystem evidence
+  @case:greeting @should-not-trigger
+  Scenario: Create a file
+    When the user asks:
+      """
+      Write result.txt.
+      """
+    Then the file snapshot contains "result.txt" named "result-file"
+`);
+  writeFileSync(join(dir, 'greeting.samples.json'), JSON.stringify({
+    caseId: 'greeting', pass: ['created'], fail: ['missing'],
   }));
   const config = join(root, 'evals.json');
   writeFileSync(config, JSON.stringify({ casesDir: 'cases' }));
@@ -121,4 +130,16 @@ test('direct Claude runner API also rejects unsupported evidence before spawning
   await assert.rejects(runner.run([{
     ...definition, checks: [{ name: 'result-file', type: 'file_exists', path: 'result.txt' }],
   }], { runs: 1, ablation: 'none' }), /unsupported ACP execution evidence/);
+});
+
+test('direct runner API refuses obsolete case contracts before preflight or execution', async () => {
+  for (const client of ['claude', 'copilot']) {
+    const runner = createAcpRunner({ client, exe: 'must-not-launch' });
+    runner.preflight = () => { throw new Error('must not preflight invalid cases'); };
+    for (const schemaVersion of [undefined, 1]) {
+      await assert.rejects(runner.run([{ ...definition, schemaVersion }], {
+        runs: 1, ablation: 'none',
+      }), /invalid ACP case greeting:.*schemaVersion/);
+    }
+  }
 });

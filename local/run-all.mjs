@@ -83,7 +83,7 @@ if (command !== 'preflight') {
   const only = (values.suites ?? values.suite)?.split(',');
   const folder = (s) => join(config.casesDir, suiteSettings(config, s).casesFolder);
   const candidates = Object.keys(config.suites).length ? Object.keys(config.suites) : readdirSync(config.casesDir);
-  suites = candidates.filter((s) => (!only || only.includes(s)) && existsSync(folder(s)) && readdirSync(folder(s)).some((f) => f.endsWith('.feature') || f.endsWith('.json') && !f.endsWith('.samples.json')));
+  suites = candidates.filter((s) => (!only || only.includes(s)) && existsSync(folder(s)) && readdirSync(folder(s)).some((f) => f.endsWith('.feature')));
   if (only?.some((s) => !suites.includes(s))) throw new Error(`unknown or empty suite in --suites: ${only.join(',')}`);
   if (!suites.length) throw new Error(`no suites found: ${config.casesDir}`);
   for (const s of suites) {

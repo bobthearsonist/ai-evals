@@ -5,31 +5,11 @@
 // transcript: { finalText, toolCalls: [{ name, input }], raw }
 import { evaluateCheck } from './assertions.mjs';
 
-function gradeCheck(k, transcript, version2) {
-  if (!version2) {
-    const name = k.name ?? k.pattern ?? k.type;
-    if (k.type === 'regex' || k.type === 'not_regex') {
-      const hay = (k.target ?? 'last_message') === 'trace' ? transcript.raw : transcript.finalText;
-      const hit = new RegExp(k.pattern, k.flags ?? '').test(hay);
-      return { name, passed: k.type === 'regex' ? hit : !hit };
-    }
-    if (k.type === 'tool_order') {
-      const idx = (toolName) => transcript.toolCalls.findIndex((call) => call.name === toolName);
-      const before = idx(k.before);
-      const after = idx(k.after);
-      return { name, passed: before !== -1 && after !== -1 && before < after };
-    }
-    // file_exists needs a workdir snapshot, which ACP transcripts do not carry.
-    return { name, passed: null, skipped: true };
-  }
-  const result = evaluateCheck(k, transcript);
-  return result;
-}
-
 // Returns { score, checks } with score = fraction of gradable checks passed.
 // Adds the skill-trigger check (with-arm must call Skill when the case expects it; the
 // without-arm must never) and the canary check.
 export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
+  if (c.schemaVersion !== 2) throw new Error('only compiled schemaVersion 2 cases are supported');
   if (c.fixtures && transcript.transport === 'acp') {
     const reads = transcript.toolCalls.filter((call) =>
       ['Read', 'Glob', 'Grep', 'view', 'glob', 'grep', 'rg'].includes(call.name)
@@ -39,14 +19,13 @@ export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
       return { score: null, checks: [], invalid: true, errors: [{ name: 'fixture-inputs', diagnostic: 'fixture file reads were refused without any successful read' }] };
     }
   }
-  const version2 = c.schemaVersion === 2;
-  const checks = c.checks.map((k) => gradeCheck(k, transcript, version2));
+  const checks = c.checks.map((k) => evaluateCheck(k, transcript));
   const validToolEvidence = Array.isArray(transcript.toolCalls) &&
     transcript.toolCalls.every((call) => call && (typeof call.name === 'string'
       || (transcript.transport === 'acp' && call.name === undefined && ['read', 'search'].includes(call.kind))));
-  const toolCalls = version2 && !validToolEvidence ? [] : transcript.toolCalls;
+  const toolCalls = validToolEvidence ? transcript.toolCalls : [];
   const skillCalls = toolCalls.filter((t) => t.name === 'Skill').length;
-  const triggerCheck = (passed) => version2 && !validToolEvidence
+  const triggerCheck = (passed) => !validToolEvidence
     ? { name: 'skill-trigger', passed: null, diagnostic: 'tool-call evidence is missing' }
     : { name: 'skill-trigger', passed };
   if (c.shouldTrigger) {
@@ -55,22 +34,17 @@ export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
     checks.push(triggerCheck(skillCalls === 0));
   }
   if (canaryToken) {
-    if (version2 && typeof transcript.raw !== 'string') {
+    if (typeof transcript.raw !== 'string') {
       checks.push({ name: 'canary', passed: null, diagnostic: 'raw trace evidence is missing' });
     } else {
       checks.push({ name: 'canary', passed: !transcript.raw.includes(canaryToken) });
     }
   }
-  if (c.schemaVersion === 2) {
-    const errors = checks.filter((check) => check.passed === null)
-      .map((check) => ({ name: check.name, diagnostic: check.diagnostic ?? 'required evidence is missing' }));
-    if (errors.length) return { score: null, checks, invalid: true, errors };
-    const score = checks.length ? checks.filter((check) => check.passed).length / checks.length : null;
-    return { score, checks, invalid: false, errors: [] };
-  }
-  const graded = checks.filter((k) => k.passed !== null);
-  const score = graded.length ? graded.filter((k) => k.passed).length / graded.length : null;
-  return { score, checks };
+  const errors = checks.filter((check) => check.passed === null)
+    .map((check) => ({ name: check.name, diagnostic: check.diagnostic ?? 'required evidence is missing' }));
+  if (errors.length) return { score: null, checks, invalid: true, errors };
+  const score = checks.length ? checks.filter((check) => check.passed).length / checks.length : null;
+  return { score, checks, invalid: false, errors: [] };
 }
 
 // Separation-based verdict: with 3 runs per arm a mean delta alone is mostly noise, so a lift or
