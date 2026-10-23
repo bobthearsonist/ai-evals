@@ -12,8 +12,9 @@ import { registerStubs } from './stubs.mjs';
 import { getRunner, validateCapabilities } from './contract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+try {
 if (process.argv.includes('--help')) {
-  console.log('usage: ai-evals <run-all|run|smoke|preflight> [--runners claude,copilot] [--suite NAME | --suites a,b] [--config evals/evals.json] [--runs 3] [--concurrency 4] [--copilot-model MODEL] [--approve-sessions N]');
+  console.log('usage: ai-evals <run-all|run|smoke|preflight> [flags]\n\nFlags: --runners ID[,ID] | --client ID --suite NAME | --suites A,B --case ID (repeatable for smoke)\n       --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH\n       --runs N --concurrency 1..8 --model ID --<client>-model ID --<client>-exe PATH\n       --acp-profile PATH --claude-acp-profile PATH --copilot-acp-profile PATH\n       --approve-sessions N --dry-run --json\nExit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.');
   process.exit(0);
 }
 const { values, positionals } = parseArgs({
@@ -21,14 +22,14 @@ const { values, positionals } = parseArgs({
   options: {
     concurrency: { type: 'string', default: '4' }, runs: { type: 'string', default: '3' },
     'approve-sessions': { type: 'string' }, suite: { type: 'string' }, suites: { type: 'string' },
-    case: { type: 'string' }, config: { type: 'string' }, 'cases-dir': { type: 'string' },
+    case: { type: 'string', multiple: true }, config: { type: 'string' }, 'cases-dir': { type: 'string' },
     'output-dir': { type: 'string' }, 'results-dir': { type: 'string' }, 'skill-root': { type: 'string' },
     client: { type: 'string' }, runners: { type: 'string', multiple: true }, exe: { type: 'string' },
     model: { type: 'string' }, 'copilot-model': { type: 'string' },
     'claude-model': { type: 'string' }, 'opencode-model': { type: 'string' },
     'claude-exe': { type: 'string' }, 'copilot-exe': { type: 'string' }, 'opencode-exe': { type: 'string' },
     'timeout-seconds': { type: 'string' },
-    'dry-run': { type: 'boolean', default: false },
+    'dry-run': { type: 'boolean', default: false }, json: { type: 'boolean', default: false },
     'acp-profile': { type: 'string' },
     'claude-acp-profile': { type: 'string' }, 'copilot-acp-profile': { type: 'string' },
   },
@@ -49,8 +50,7 @@ registerStubs();
 const runners = ids.map(getRunner);
 for (const r of runners) {
   if (!r.capabilities.implemented) {
-    console.error(`${r.id}: not implemented`);
-    process.exit(3);
+    throw new Error(`${r.id}: not implemented`);
   }
 }
 const runnerArgs = (id) => {
@@ -88,12 +88,16 @@ if (command !== 'preflight') {
   if (!suites.length) throw new Error(`no suites found: ${config.casesDir}`);
   for (const s of suites) {
     const cases = loadSuite(folder(s));
-    if (values.case && !cases.some((c) => c.id === values.case)) throw new Error(`unknown case: ${values.case} in ${s}`);
-    const selectedCase = values.case ?? (command === 'smoke' ? cases[0].id : undefined);
-    const problems = cases.filter((c) => !selectedCase || c.id === selectedCase)
+    const caseIds = values.case ?? [];
+    if (command !== 'smoke' && caseIds.length > 1) throw new Error('--case may be repeated only for smoke');
+    if (new Set(caseIds).size !== caseIds.length) throw new Error('--case values must be distinct');
+    for (const id of caseIds) if (!cases.some((c) => c.id === id)) throw new Error(`unknown case: ${id} in ${s}`);
+    const selectedIds = command === 'smoke' ? (caseIds.length ? caseIds : [cases[0].id]) : caseIds;
+    const selected = new Set(selectedIds);
+    const problems = cases.filter((c) => selected.size ? selected.has(c.id) : true)
       .flatMap((c) => runners.flatMap((r) => validateCapabilities(c, r.capabilities).map((problem) => `${r.id}/${s}/${c.id}: ${problem}`)));
     if (problems.length) throw new Error(`unsupported execution evidence:\n- ${problems.join('\n- ')}`);
-    counts.set(s, command === 'smoke' || values.case ? 1 : cases.length);
+    counts.set(s, command === 'smoke' ? selectedIds.length : caseIds.length ? 1 : cases.length);
   }
 }
 const runs = command === 'smoke' ? 1 : Number(values.runs);
@@ -102,12 +106,12 @@ if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) 
 const planned = (s, r) => r.plannedSessions({ caseCount: counts.get(s), runs, ablation: command === 'smoke' ? 'none' : 'with-without' });
 const total = suites.reduce((n, s) => n + runners.reduce((m, r) => m + planned(s, r), 0), 0);
 if (values['dry-run']) {
-  console.log(JSON.stringify({ suites, runners: ids, transport: 'acp', runs, plannedSessions: total }, null, 2));
+  const result = { suites, runners: ids, transport: 'acp', runs, plannedSessions: total };
+  console.log(values.json ? JSON.stringify(result, null, 2) : `dry run: ${suites.length} suite(s), ${ids.length} runner(s), ${total} session(s) planned`);
   process.exit(0);
 }
 if (command !== 'preflight' && Number(values['approve-sessions']) !== total) {
-  console.log(`approval gate: this starts ${total} live session(s) across ${suites.length} suites and ${runners.length} runner(s); pass --approve-sessions ${total} to proceed`);
-  process.exit(1);
+  throw new Error(`approval gate: this starts ${total} live session(s) across ${suites.length} suites and ${runners.length} runner(s); pass --approve-sessions ${total} to proceed`);
 }
 const passthrough = ['config', 'cases-dir', 'output-dir', 'results-dir', 'skill-root'].flatMap((k) => values[k] === undefined ? [] : [`--${k}`, values[k]]);
 // Check every selected client before any paid work, not after another client has spent its budget.
@@ -128,16 +132,16 @@ if (!failed.length) {
   // Suite/runner pairs are serial: --concurrency is a global ceiling, not multiplied by the suite count.
   jobs: for (const s of suites) for (const r of runners) {
     const p = await invoke([
-      command === 'smoke' ? 'smoke' : 'run', '--suite', s, '--runs', String(runs),
+      command === 'smoke' ? 'smoke' : 'run', '--suite', s, '--runs', String(runs), '--json',
       '--concurrency', values.concurrency, '--approve-sessions', String(planned(s, r)),
-      ...passthrough, ...runnerArgs(r.id), ...(values.case ? ['--case', values.case] : []),
+      ...passthrough, ...runnerArgs(r.id), ...(values.case ?? []).flatMap((id) => ['--case', id]),
     ]);
     let result;
     try {
       const parsed = JSON.parse(p.out);
       result = { ...parsed, suite: s, client: r.id, diffs: p.err.split(/\r?\n/).filter((l) => l.startsWith('diff ')) };
-      if (p.code !== 0) result.error = p.err.trim() || parsed.caveats?.at(-1) || `exit ${p.code}`;
-      if (p.code !== 0 && ['passed', 'below_threshold'].includes(result.status)) result.status = 'error';
+      if (p.code !== 0 && !['passed', 'below_threshold'].includes(result.status)) result.error = p.err.trim() || parsed.caveats?.at(-1) || `exit ${p.code}`;
+      if (p.code !== 0 && result.status === 'passed') result.status = 'error';
     } catch {
       result = { suite: s, client: r.id, status: 'error', cases: [], error: `exit ${p.code}: ${p.err.trim() || p.out.trim() || 'invalid child output'}` };
     }
@@ -145,14 +149,20 @@ if (!failed.length) {
     if (!['passed', 'below_threshold'].includes(result.status)) break jobs;
   }
 }
-for (const r of results) {
-  console.log(`${r.suite ?? 'preflight'}: ${r.status} client=${r.client} transport=acp${r.model ? ` model=${r.model}` : ''} score=${r.overallScore?.toFixed?.(2) ?? '-'} cost=${typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(2)}` : 'unknown'}`);
-  if (r.error) console.error(r.error);
+if (!values.json) for (const r of results) {
+  console.log(`${r.suite ?? 'preflight'}: ${r.status} client=${r.client} transport=acp${r.model ? ` model=${r.model}` : ''} score=${r.overallScore?.toFixed?.(2) ?? '-'} cost=${typeof r.costUsd === 'number' ? `${r.costUsd.toFixed(2)}` : 'unknown'}`);
+  if (r.error) console.error(`error: ${r.error.replace(/^error: /, '')}`);
   for (const c of r.cases ?? []) console.log(`  ${c.id}: with=${c.withScore?.toFixed(2) ?? '-'} without=${c.withoutScore?.toFixed(2) ?? '-'} delta=${c.delta?.toFixed(2) ?? '-'} [${c.verdict}]${c.invalidRuns ? ` (${c.invalidRuns} invalid run(s) excluded)` : ''}`);
   for (const d of r.diffs ?? []) console.log(`vs previous ${r.client}/${r.suite} ${d.slice(5)}`);
 }
 mkdirSync(config.resultsDir, { recursive: true });
 writeFileSync(join(config.resultsDir, command === 'smoke' ? 'smoke-summary.md' : 'summary.md'), renderMarkdown(results.map((r) => ({ ...r, cases: r.cases ?? [] }))));
 const knownCost = results.reduce((n, r) => n + (r.costUsd ?? 0), 0);
-console.log(`known cost ~$${knownCost.toFixed(2)}${results.some((r) => r.costUsd == null) ? '; some USD costs unknown' : ''}`);
-process.exitCode = results.some((r) => !['passed', 'below_threshold'].includes(r.status)) ? 2 : 0;
+const knownCostMessage = `known cost ~${knownCost.toFixed(2)}${results.some((r) => r.costUsd == null) ? '; some USD costs unknown' : ''}`;
+if (values.json) console.log(JSON.stringify({ suites, runners: ids, runs, plannedSessions: total, results, knownCostUsd: knownCost, costComplete: results.every((r) => r.costUsd != null) }, null, 2));
+else console.log(knownCostMessage);
+process.exitCode = results.some((r) => r.status !== 'passed') ? 1 : 0;
+} catch (error) {
+  console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 2;
+}

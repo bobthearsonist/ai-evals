@@ -52,13 +52,15 @@ test('default CLI executions use real fake ACP subprocesses, archive protocol ev
     const output = join(root, client);
     const result = invoke(['smoke', '--client', client, '--config', config, '--suite', 'demo',
       '--case', 'negative-control', '--model', 'synthetic-model', '--acp-profile', profile,
-      '--approve-sessions', '1', '--output-dir', output]);
-    assert.equal(result.status, 0, result.stderr);
+      '--approve-sessions', '1', '--output-dir', output, '--json']);
+    assert.equal(result.status, 1, result.stderr);
     const normalized = JSON.parse(result.stdout);
+    assert.equal(normalized.status, 'below_threshold');
+    assert.equal(normalized.cases[0].invalidRuns, 0);
     assert.equal(normalized.transport, 'acp');
     assert.equal(normalized.sessions, 1);
     assert.equal(normalized.client, client);
-    assert.equal(normalized.costUsd, null);
+    assert.equal(normalized.costUsd, 0.002);
     assert.match(normalized.caveats.join(';'), /custom ACP profile.*not verified/);
     const runDir = join(output, readdirSync(output)[0]);
     const captured = JSON.parse(readFileSync(join(runDir, 'traces', 'negative-control', 'with-1.jsonl')));
@@ -66,6 +68,9 @@ test('default CLI executions use real fake ACP subprocesses, archive protocol ev
     assert.equal(Array.isArray(captured.transcript.raw), true);
     assert.equal(captured.transcript.finalText, 'hello world');
     assert.equal(captured.transcript.model, 'synthetic-model');
+    const receipt = JSON.parse(readFileSync(join(runDir, 'traces', 'negative-control', 'with-1.jsonl.receipt.json')));
+    assert.equal(receipt.valid, true);
+    assert.deepEqual(receipt.grade.checks.filter((check) => check.passed === false), [{ name: 'farewell', passed: false }]);
     const replay = invoke(['regrade', runDir]);
     assert.equal(replay.status, 0, replay.stderr);
     assert.match(replay.stdout, /policy=recorded/);
@@ -79,12 +84,55 @@ test('run-all forwards per-client custom ACP profiles and models without an expl
     '--case', 'negative-control', '--claude-model', 'synthetic-model', '--copilot-model', 'selected-model',
     '--claude-acp-profile', profile, '--copilot-acp-profile', profile, '--approve-sessions', '2',
     '--output-dir', join(root, 'runs'), '--results-dir', join(root, 'results')]);
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stderr, '');
+  assert.doesNotMatch(result.stdout, /: error/);
+  assert.equal((result.stdout.match(/demo: below_threshold/g) ?? []).length, 2);
   assert.match(result.stdout, /client=claude transport=acp model=synthetic-model/);
   assert.match(result.stdout, /client=copilot transport=acp model=selected-model/);
   const summary = readFileSync(join(root, 'results', 'smoke-summary.md'), 'utf8');
   assert.match(summary, /\| claude \| acp \|/);
   assert.match(summary, /\| copilot \| acp \|/);
+});
+
+test('passing smoke and paired runs exit zero for single and multiple runners', (t) => {
+  const { root, profile } = setup(t);
+  const suiteDir = join(root, 'cases', 'passing');
+  mkdirSync(suiteDir, { recursive: true });
+  writeFileSync(join(suiteDir, 'greeting.json'), JSON.stringify({
+    schemaVersion: 2, id: 'greeting', prompt: 'Say hello.', shouldTrigger: false,
+    checks: [{ name: 'greeting', type: 'contains', value: 'hello world' }],
+  }));
+  const passingConfig = join(root, 'evals.json');
+  writeFileSync(passingConfig, JSON.stringify({
+    casesDir: 'cases', skillsRoots: [resolve(import.meta.dirname, 'fixtures', 'skills')],
+    suites: { passing: { skill: 'demo' } },
+  }));
+
+  for (const command of ['smoke', 'run']) for (const multiple of [false, true]) {
+    const planned = (command === 'smoke' ? 1 : 2) * (multiple ? 2 : 1);
+    const selection = multiple
+      ? ['--runners', 'claude,copilot', '--claude-model', 'synthetic-model', '--copilot-model', 'selected-model',
+        '--claude-acp-profile', profile, '--copilot-acp-profile', profile]
+      : ['--client', 'claude', '--model', 'synthetic-model', '--acp-profile', profile];
+    const entrypoint = command === 'run' && multiple ? 'run-all' : command;
+    const output = join(root, command, multiple ? 'multiple' : 'single');
+    const result = invoke([entrypoint, '--config', passingConfig, '--suite', 'passing', ...selection,
+      '--runs', '1', '--approve-sessions', String(planned), '--json',
+      '--output-dir', output, '--results-dir', join(output, 'results')]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stderr, '');
+    const parsed = JSON.parse(result.stdout);
+    const results = multiple ? parsed.results : [parsed];
+    assert.equal(results.length, multiple ? 2 : 1);
+    assert.equal(results.reduce((sum, item) => sum + item.sessions, 0), planned);
+    for (const item of results) {
+      assert.equal(item.status, 'passed');
+      assert.equal(item.overallScore, 1);
+      assert.equal(item.cases[0].invalidRuns, 0);
+      assert.equal(item.error, undefined);
+    }
+  }
 });
 
 test('default spend-cap and legacy-only options cannot imply unsupported ACP guarantees', () => {
@@ -96,7 +144,7 @@ test('default spend-cap and legacy-only options cannot imply unsupported ACP gua
     }
   }
   const legacy = invoke(['preflight', '--transport', 'native', '--exe', 'must-not-launch']);
-  assert.equal(legacy.status, 1);
+  assert.equal(legacy.status, 2);
   assert.match(legacy.stderr, /Unknown option '--transport'/);
 });
 
@@ -116,14 +164,14 @@ test('native archives are explicitly refused for both replay and judging', (t) =
   }
 });
 
-test('default dry-run plans remain offline and retain the existing approval gate contract', () => {
-  const result = invoke(['run', '--config', config, '--suite', 'demo', '--dry-run']);
+test('default dry-run plans remain offline and approval errors use the documented exit code', () => {
+  const result = invoke(['run', '--config', config, '--suite', 'demo', '--dry-run', '--json']);
   assert.equal(result.status, 0, result.stderr);
   const plan = JSON.parse(result.stdout);
   assert.equal(plan.transport, 'acp');
   assert.equal(plan.plannedSessions, 18);
   const unapproved = invoke(['run', '--config', config, '--suite', 'demo']);
-  assert.equal(unapproved.status, 4);
+  assert.equal(unapproved.status, 2);
   assert.match(unapproved.stderr, /--approve-sessions 18/);
 });
 

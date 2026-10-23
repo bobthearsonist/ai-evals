@@ -46,7 +46,7 @@ test('offline CLI validation and dry run never probe the native executable', () 
   const config = resolve(import.meta.dirname, 'fixtures/evals.json');
   for (const command of ['validate', 'run']) {
     const proc = spawnSync(process.execPath, [cli, command, '--config', config, '--suite', 'demo',
-      '--exe', 'must-not-launch', ...(command === 'run' ? ['--dry-run'] : [])], { encoding: 'utf8' });
+      '--exe', 'must-not-launch', '--json', ...(command === 'run' ? ['--dry-run'] : [])], { encoding: 'utf8' });
     assert.equal(proc.status, 0, proc.stderr);
     const result = JSON.parse(proc.stdout);
     assert.equal(command === 'run' ? result.plannedSessions : result.caseCount, command === 'run' ? 18 : 3);
@@ -96,7 +96,7 @@ test('expanded outline approval is computed before probing any executable', () =
   const cli = resolve(import.meta.dirname, '../local/cli.mjs');
   const proc = spawnSync(process.execPath, [cli, 'run', '--config', join(root, 'evals.json'),
     '--suite', 'outline', '--client', 'copilot', '--exe', 'must-not-launch'], { encoding: 'utf8' });
-  assert.equal(proc.status, 4, proc.stderr);
+  assert.equal(proc.status, 2, proc.stderr);
   assert.match(proc.stderr, /--approve-sessions 12/);
 }));
 

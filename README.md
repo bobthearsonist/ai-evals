@@ -61,10 +61,12 @@ your-repo/
 }
 ```
 
-Config paths are relative to the config file. Without `--config`, paths resolve
-from the calling repository: `evals/cases`, `skills`, and `evals/.work`.
-`--cases-dir`, `--skill-root` (semicolon-separated), `--output-dir` and
-`--results-dir` override config with paths relative to the working directory.
+Config paths are relative to the config file. Without `--config`, the engine
+walks up from the working directory for `evals/evals.json` or `evals.json`; if
+none exists, paths resolve from the caller as `evals/cases`, `skills`, and
+`evals/.work`. Explicit `--config` always takes precedence. `--cases-dir`,
+`--skill-root` (semicolon-separated), `--output-dir` and `--results-dir`
+override config with paths relative to the working directory.
 `EVAL_SKILL_ROOT` can also override skill roots. With no `suites` mapping, suite
 ids equal their skill names and case directories.
 
@@ -73,6 +75,10 @@ npx --no-install ai-evals preflight --client claude --model MODEL_ID
 npx --no-install ai-evals smoke --config evals/evals.json --suite my-suite --model MODEL_ID --approve-sessions 1
 npx --no-install ai-evals run --config evals/evals.json --suite my-suite --model MODEL_ID --runs 3 --approve-sessions 18
 npx --no-install ai-evals run-all --config evals/evals.json
+npx --no-install ai-evals smoke --config evals/evals.json --suite my-suite --case first --case second --json
+npx --no-install ai-evals report evals/.work/local-runs/<run>
+npx --no-install ai-evals report evals/.work/local-runs/<run> --answer --json
+npx --no-install ai-evals migrate legacy-cases --out cases/my-suite
 ```
 
 Model IDs are adapter-specific ACP selection values, not interchangeable provider
@@ -80,7 +86,10 @@ API IDs. The pinned Claude adapter exposes Haiku 5.5 as `haiku`; Copilot exposes
 it as `claude-haiku-5.5`. The requested value must be confirmed before prompting;
 an unavailable model fails rather than falling back to a default.
 
-`run` requires `--suite`. `run-all` discovers configured suites (or case folders)
+`run` requires `--suite`. `smoke` accepts repeatable `--case ID` options and
+archives the selected cases in one run directory. `validate`, `smoke`, and dry-run
+commands use concise human output by default; add `--json` for the complete
+machine-readable result. `run-all` discovers configured suites (or case folders)
 and prints the required session approval before doing paid work. A three-case,
 three-repeat, with/without suite plans 18 sessions. `--concurrency` bounds
 sessions in flight (1-8); the current ACP runner executes serially. Suite/runner pairs run serially, so this is a global
@@ -231,6 +240,15 @@ Runs without a final result are excluded and counted as invalid.
 npx --no-install ai-evals regrade evals/.work/local-runs/<run> --config evals/evals.json --suite my-suite
 ```
 
+`report RUN_DIR` reads the archived policy and traces, then uses the shared
+ACP parser and grader to show PASS/FAIL check outcomes, reasons, trace validity,
+and Skill tool-call counts. Add `--answer` to include captured final answers or
+`--json` for machine-readable detail. It makes no model calls.
+
+`migrate SRC_DIR --out DIR` converts legacy JSON cases to `cases.feature` and
+sample sidecars using the engine's JSON-to-Gherkin migration helper. Review the
+reported warnings and generated cases before using them.
+
 Offline regrading uses the shared transcript grader and makes no model calls.
 It defaults to the archived policy, so later case edits cannot silently change
 the yardstick. Use `--policy current --suite my-suite` to deliberately apply
@@ -295,9 +313,12 @@ Every ACP candidate needs an explicit model (`auto` is rejected). Preflight
 validates launch/profile capabilities, local executable/policy readiness and
 credential availability without an inference call. It does not prove provider
 access or live skill discovery. Approval
-gates still precede native capability preflight: single-runner unapproved
-`run` exits 4, multi-runner/run-all exits 1 and prints the exact session count.
-Dry runs report `"transport": "acp"` without authentication or inference.
+gates still precede native capability preflight and require the exact planned
+session count. CLI exit codes are consistent: `0` means success, `1` means
+evaluation/preflight failure or a below-threshold result, and `2` means a
+usage/configuration/approval error. Human-readable errors use the `error:`
+prefix. `--json` emits complete result objects where applicable. Dry runs report
+`"transport": "acp"` without authentication or inference.
 `--max-cost-usd`, `--max-ai-credits` and legacy `--copilot-home` are refused
 instead of silently ignored. The current runner is serial even with a higher
 concurrency ceiling. Tool/trace evidence is available, skill-discovery evidence
@@ -334,7 +355,8 @@ Dry-run/approval counts include only eligible mapped answers. JSON rubrics
 are not candidate prompts or deterministic checks.
 Judge output must be strict
 `{verdict,rationale,evidence}` JSON; pass/fail requires exact evidence quotes
-from the answer. Invalid, missing or unsupported output abstains rather than
+from the answer. Evidence is trimmed and matching surrounding straight or smart
+quote wrappers are removed before exact-match verification. Invalid, missing or unsupported output abstains rather than
 passing. A native profile unable to verify tool/skill/MCP exclusion refuses.
 There is no retry or implicit model selection. `--dry-run` reports the exact
 eligible session count without inference or assessment writes.

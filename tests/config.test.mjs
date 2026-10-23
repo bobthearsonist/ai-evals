@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { resolveConfig, suiteSettings } from '../local/config.mjs';
@@ -30,6 +30,23 @@ test('config paths resolve relative to the config file and flags override them',
   const o = resolveConfig({ configPath: p, cwd, flags: { outputDir: join(dir, 'out') } });
   assert.equal(o.outputDir, join(dir, 'out'));
   assert.throws(() => resolveConfig({ configPath: join(dir, 'missing.json'), cwd }));
+});
+
+test('discovers evals/evals.json from nested working directories', () => {
+  const root = join(import.meta.dirname, 'fixtures', `.config-discovery-${process.pid}`);
+  const nested = join(root, 'packages', 'app');
+  rmSync(root, { recursive: true, force: true });
+  try {
+    mkdirSync(join(root, 'evals'), { recursive: true });
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(root, 'evals', 'evals.json'), JSON.stringify({ casesDir: 'cases' }));
+    const discovered = resolveConfig({ cwd: nested });
+    assert.equal(discovered.casesDir, join(root, 'evals', 'cases'));
+    const explicit = resolveConfig({ cwd: nested, configPath: join(cwd, 'tests', 'fixtures', 'evals.json') });
+    assert.equal(explicit.casesDir, join(cwd, 'tests', 'fixtures', 'cases'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('schemaVersion is optional but must be supported', () => {

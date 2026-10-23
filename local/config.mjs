@@ -1,16 +1,27 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
-// Defaults belong to the calling repo, never the installed engine's directory.
-// Config paths are relative to the config file so a repo's evals/ folder is self-contained.
+function discoverConfig(cwd) {
+  let directory = resolve(cwd);
+  while (true) {
+    for (const candidate of [resolve(directory, 'evals', 'evals.json'), resolve(directory, 'evals.json')]) {
+      if (existsSync(candidate)) return candidate;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
+// Config paths are relative to the config file; defaults still belong to the caller.
 export function resolveConfig({ configPath, flags = {}, cwd = process.cwd() } = {}) {
+  const selectedConfig = configPath ? resolve(cwd, configPath) : discoverConfig(cwd);
   let cfg = {};
   let base = resolve(cwd, 'evals');
-  if (configPath) {
-    const p = resolve(cwd, configPath);
-    if (!existsSync(p)) throw new Error(`config not found: ${p}`);
-    cfg = JSON.parse(readFileSync(p, 'utf8'));
-    base = dirname(p);
+  if (selectedConfig) {
+    if (!existsSync(selectedConfig)) throw new Error(`config not found: ${selectedConfig}`);
+    cfg = JSON.parse(readFileSync(selectedConfig, 'utf8'));
+    base = dirname(selectedConfig);
   }
   const abs = (v, from = base) => (isAbsolute(v) ? v : resolve(from, v));
   const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(';')).filter(Boolean);
