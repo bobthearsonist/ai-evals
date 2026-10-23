@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "My Case",
+  "prompt": "Please summarize this change.",
+  "shouldTrigger": true,
+  "checks": [
+    {"type": "regex", "name": "Has Summary", "pattern": "summary", "flags": "i"},
+    {"type": "not_regex", "name": "has summary", "pattern": "secret"},
+    {"type": "file_exists", "name": "Output file", "path": "answer.md"},
+    {"type": "tool_order", "name": "Tools order", "before": "Read", "after": "Write"}
+  ],
+  "samples": {
+    "pass": ["Summary: implemented."],
+    "fail": ["No details here."]
+  }
+}

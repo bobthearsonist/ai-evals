@@ -73,11 +73,17 @@ export function validateCase(c) {
     const s = c.samples;
     if (!s || !Array.isArray(s.pass) || !Array.isArray(s.fail) || ![...s.pass, ...s.fail].every((x) => typeof x === 'string')) problems.push('samples must be { pass: string[], fail: string[] }');
   }
-  for (const k of c.checks ?? []) {
-    if (!['regex', 'not_regex', 'file_exists', 'tool_order'].includes(k.type)) problems.push(`unsupported check type ${k.type}`);
-    if (['regex', 'not_regex'].includes(k.type) && typeof k.pattern !== 'string') problems.push('check needs pattern');
-    if (k.type === 'file_exists' && typeof k.path !== 'string') problems.push('file_exists needs path');
-    if (k.type === 'tool_order' && (typeof k.before !== 'string' || typeof k.after !== 'string')) problems.push('tool_order needs before and after');
+  for (const [index, check] of (Array.isArray(c.checks) ? c.checks : []).entries()) {
+    const name = typeof check?.name === 'string' ? ` (${check.name})` : '';
+    const label = `checks[${index}]${name}`;
+    if (!check || typeof check !== 'object') {
+      problems.push(`${label}: check must be an object`);
+      continue;
+    }
+    if (!['regex', 'not_regex', 'file_exists', 'tool_order'].includes(check.type)) problems.push(`${label}: unsupported check type ${check.type}`);
+    if (['regex', 'not_regex'].includes(check.type) && typeof check.pattern !== 'string') problems.push(`${label}: check needs pattern`);
+    if (check.type === 'file_exists' && typeof check.path !== 'string') problems.push(`${label}: file_exists needs path`);
+    if (check.type === 'tool_order' && (typeof check.before !== 'string' || typeof check.after !== 'string')) problems.push(`${label}: tool_order needs before and after`);
   }
   return problems;
 }
@@ -85,13 +91,22 @@ export function validateCase(c) {
 // Version 2 is deliberately stricter than the legacy v1 contract. Keep the v1
 // checks above unchanged so archived suites retain their historical validation.
 export function validateV2Case(c) {
-  const problems = validateV2CaseSchema(c);
+  const problems = validateV2CaseSchema(c).map((problem) => {
+    const match = /^\/checks\/(\d+)(.*)$/.exec(problem);
+    if (!match) return problem;
+    const check = c?.checks?.[Number(match[1])];
+    const name = typeof check?.name === 'string' ? ` (${check.name})` : '';
+    return `checks[${match[1]}]${name}${match[2]}`;
+  });
   if (!Array.isArray(c?.checks)) return problems;
   const names = new Set();
   for (const [index, check] of c.checks.entries()) {
-    for (const problem of validateCheck(check)) problems.push(`checks[${index}]: ${problem}`);
+    const label = typeof check?.name === 'string' ? `checks[${index}] (${check.name})` : `checks[${index}]`;
+    for (const problem of validateCheck(check)) {
+      if (problem.startsWith('invalid regular expression:')) problems.push(`${label}: ${problem}`);
+    }
     if (typeof check?.name === 'string') {
-      if (names.has(check.name)) problems.push(`checks[${index}]: duplicate check name "${check.name}"`);
+      if (names.has(check.name)) problems.push(`${label}: duplicate check name "${check.name}"`);
       names.add(check.name);
     }
   }

@@ -95,9 +95,8 @@ const validateCheckSchema = ajv.compile({ $ref: checkSchema.$id });
 const validateCaseSchema = ajv.compile(caseSchema);
 
 function formatErrors(errors = []) {
-  return errors.map((error) => {
+  return errors.filter((error) => error.keyword !== 'if').map((error) => {
     const path = error.instancePath || '/';
-    if (error.keyword === 'required') return `${path} ${error.message}`;
     return `${path} ${error.message}`;
   });
 }

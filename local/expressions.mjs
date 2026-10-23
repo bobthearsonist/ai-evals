@@ -45,6 +45,10 @@ add('the commit subject uses a conventional header with types {string}', 'Outcom
   (types) => [{ type: 'conventional_header', target: 'commit_subject', types: types.split(',').map((type) => type.trim()) }], true);
 add('the commit subject description starts with a lowercase letter', 'Outcome', 'none',
   () => [{ type: 'lowercase_initial', target: 'commit_subject' }], true);
+add('the response calls tools in order {string} then {string}', 'Outcome', 'none',
+  (before, after) => [{ type: 'tool_order', before, after }], true);
+add('the file snapshot contains {string}', 'Outcome', 'none',
+  (path) => [{ type: 'file_exists', path }], true);
 
 export function compileStep(step) {
   const matches = definitions.flatMap((definition) => {

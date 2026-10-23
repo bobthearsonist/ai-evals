@@ -100,6 +100,21 @@ test('v2 validation enforces check names, unique IDs and valid regular expressio
   assert.deepEqual(validateCase(v2([check('contains', { value: 'x' }, 'one'), check('starts_with', { value: 'x' }, 'two')])), []);
 });
 
+test('validation errors identify the case check by index and name', () => {
+  const legacy = {
+    schemaVersion: 1,
+    id: 'legacy',
+    prompt: 'Legacy prompt',
+    shouldTrigger: false,
+    checks: [{ type: 'regex', name: 'missing-pattern' }],
+  };
+  assert.match(validateCase(legacy)[0], /checks\[0\] \(missing-pattern\): check needs pattern/);
+
+  const current = v2([check('regex', {}, 'missing-pattern')]);
+  assert.equal(validateCase(current).length, 1);
+  assert.match(validateCase(current)[0], /checks\[0\] \(missing-pattern\).*pattern/);
+});
+
 test('v2 grading marks absent required evidence invalid instead of skipping it', () => {
   const c = v2([
     check('tool_order', { before: 'Read', after: 'Edit' }, 'order'),
