@@ -1,0 +1,55 @@
+{
+  "type": "ai-evals.acp",
+  "schemaVersion": 1,
+  "transcript": {
+    "finalText": "I used the demo skill.",
+    "toolCalls": [],
+    "complete": true,
+    "raw": [
+      {
+        "direction": "in",
+        "method": "session/update",
+        "params": {
+          "sessionId": "session-1",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "skill-1",
+            "title": "Using skill: demo",
+            "kind": "other",
+            "rawInput": {
+              "skill": "demo"
+            }
+          }
+        }
+      },
+      {
+        "direction": "in",
+        "method": "session/update",
+        "params": {
+          "sessionId": "session-1",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "skill-1",
+            "status": "completed"
+          }
+        }
+      },
+      {
+        "direction": "in",
+        "method": "session/update",
+        "params": {
+          "sessionId": "session-1",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "used": 42,
+            "size": 200000,
+            "cost": {
+              "amount": 0.0042,
+              "currency": "USD"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -107,11 +107,14 @@ export function checkAcpRuntime(launch) {
           env: isolated.env, encoding: 'utf8', timeout: 10_000,
           stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
-      } catch {
-        throw new Error('Copilot ACP executable is not runnable; supply a native executable with --exe');
+      } catch (error) {
+        throw new Error(
+          `Copilot ACP executable "${launch.command}" is not runnable; verify the CLI is installed and available at that path or on PATH, or pass its native executable with --exe. ${error.message}`,
+          { cause: error },
+        );
       }
       if (!new RegExp(`\\b${launch.expectedAgentVersion.replaceAll('.', '\\.')}\\b`).test(version)) {
-        throw new Error(`Copilot ACP profile requires CLI ${launch.expectedAgentVersion}`);
+        throw new Error(`Copilot ACP executable "${launch.command}" must be CLI version ${launch.expectedAgentVersion}`);
       }
     } finally { isolated.cleanup(); }
   } else {
@@ -122,8 +125,11 @@ export function checkAcpRuntime(launch) {
         stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
       });
       if (version.trim() !== launch.expectedAgentVersion) throw new Error('Pinned Claude ACP adapter version mismatch');
-    } catch {
-      throw new Error('Claude ACP runtime/version/policy check failed; run local/claude-acp.mjs --version for details');
+    } catch (error) {
+      throw new Error(
+        `Claude ACP runtime check failed for Node executable "${launch.command}" and adapter "${launch.args[0]}": ${error.message}. Run "node ${launch.args[0]} --version" locally and verify the pinned adapter version and managed-policy settings.`,
+        { cause: error },
+      );
     } finally { isolated.cleanup(); }
   }
   resolveAcpCredentials(launch.isolatedClient);

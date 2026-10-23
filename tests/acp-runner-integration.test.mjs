@@ -59,6 +59,8 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
     });
     assert.equal(calls, 2);
     assert.equal(result.status, 'passed');
+    assert.equal(result.costUsd, null, 'cost remains unknown when the transcript reports none');
+    assert.equal(result.cases[0].costUsd, null);
     assert.equal(result.cases[0].withScore, 1);
     assert.equal(result.cases[0].withoutScore, 1);
     for (const workspace of workspaces) assert.equal(existsSync(workspace), false);
@@ -131,6 +133,43 @@ test('ACP runner executes a branded launch through the actual SDK fake subproces
     });
     assert.equal(replay[0].withScore, result.cases[0].withScore);
     assert.equal(replay[0].withoutScore, result.cases[0].withoutScore);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('ACP trace parser restores Skill calls and usage from raw protocol evidence', () => {
+  const trace = readFileSync(resolve(import.meta.dirname, 'fixtures/acp-skill-trace.json'), 'utf8');
+  const parsed = parseAcpTrace(trace);
+  assert.equal(parsed.toolCalls.length, 1);
+  assert.equal(parsed.toolCalls[0].name, 'Skill');
+  assert.equal(parsed.toolCalls[0].title, 'Using skill: demo');
+  assert.equal(parsed.toolCalls[0].status, 'completed');
+  assert.deepEqual(parsed.usage.context, { used: 42, size: 200000 });
+  assert.deepEqual(parsed.usage.cost, { amount: 0.0042, currency: 'USD' });
+});
+
+test('runner surfaces reported USD usage cost in case and run results', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-cost-'));
+  try {
+    const source = join(root, 'skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\nGreet.\n');
+    const runner = createAcpRunner({
+      client: 'copilot',
+      launch: (options) => Object.freeze({ ...options }),
+      execute: async () => ({
+        finalText: 'hello', toolCalls: [], raw: [], complete: true, errors: [],
+        usage: { inputTokens: 12, outputTokens: 5, context: null, cost: { amount: 0.0123, currency: 'USD' }, known: true },
+      }),
+    });
+    const cases = compileFeature(feature, { uri: 'cost.feature' });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases });
+    const result = await runner.run(cases, {
+      ...prepared, outputDir: join(root, 'output'), runs: 1, ablation: 'none', model: 'fake-model',
+    });
+    assert.equal(result.costUsd, 0.0123);
+    assert.equal(result.cases[0].costUsd, 0.0123);
+    const receipt = JSON.parse(readFileSync(join(root, 'traces', 'greeting', 'with-1.jsonl.receipt.json')));
+    assert.deepEqual(receipt.usage.cost, { amount: 0.0123, currency: 'USD' });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

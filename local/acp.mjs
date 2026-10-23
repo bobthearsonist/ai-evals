@@ -16,6 +16,27 @@ function asError(error) {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function contextualizeExecutionErrors(options, errors) {
+  const client = options.client ?? 'unknown';
+  const profile = options.profile ?? 'default';
+  const context = `ACP client ${client} (profile ${profile}) using executable "${options.command}" from "${options.cwd}"`;
+  return errors.map((error) => {
+    const normalized = asError(error);
+    return normalized.message.includes(context)
+      ? normalized
+      : new Error(`${context}: ${normalized.message}`, { cause: normalized });
+  });
+}
+
+function describeLaunchError(options, error) {
+  const client = options.client ?? 'unknown';
+  const profile = options.profile ?? 'default';
+  return new Error(
+    `Unable to start ACP client ${client} (profile ${profile}) using executable "${options.command}" from "${options.cwd}": ${asError(error).message}. Verify the executable exists and is available at that path or on PATH.`,
+    { cause: asError(error) },
+  );
+}
+
 function normalizedUsage() {
   return {
     inputTokens: null,
@@ -137,7 +158,7 @@ async function executeConfiguredAcp(options, environment) {
       windowsHide: true,
     });
   } catch (error) {
-    const launchError = asError(error);
+    const launchError = describeLaunchError(options, error);
     record(raw, { direction: 'error', phase: 'spawn', message: launchError.message });
     return toResult({ text: '', toolCalls, raw, complete: false, usage, model, stopReason, errors: [launchError] });
   }
@@ -149,6 +170,18 @@ async function executeConfiguredAcp(options, environment) {
   const closePromise = new Promise((resolve) => {
     child.once('close', (code, signal) => resolve({ code, signal }));
   });
+  const spawnPromise = new Promise((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', reject);
+  });
+  try {
+    await spawnPromise;
+  } catch (error) {
+    const launchError = describeLaunchError(options, error);
+    record(raw, { direction: 'error', phase: 'spawn', message: launchError.message });
+    await closePromise;
+    return toResult({ text: '', toolCalls, raw, complete: false, usage, model, stopReason, errors: [launchError] });
+  }
 
   const app = createClient({ name: 'ai-evals', version: '0.1.1' });
   app.onRequest(methods.client.session.requestPermission, requestPermissionHandler(raw));
@@ -270,7 +303,7 @@ async function executeConfiguredAcp(options, environment) {
       timeoutPromise,
     ]);
     if (outcome.timeout) {
-      errors.push(new Error(`ACP prompt exceeded timeout of ${options.timeoutMs}ms`));
+      errors.push(new Error(`ACP prompt exceeded timeout of ${options.timeoutMs}ms; increase the timeout if this duration is expected or verify the ACP client is responsive`));
       record(raw, { direction: 'error', phase: 'timeout', timeoutMs: options.timeoutMs });
       await Promise.race([operation.catch(() => undefined), delay(250)]);
     } else {
@@ -304,5 +337,8 @@ async function executeConfiguredAcp(options, environment) {
     record(raw, { direction: 'error', phase: 'judge-isolation', message: 'tool calls observed in judge session' });
   }
 
-  return toResult({ text: text.join(''), toolCalls, raw, complete: complete && errors.length === 0, usage, model, stopReason, errors });
+  return toResult({
+    text: text.join(''), toolCalls, raw, complete: complete && errors.length === 0, usage, model, stopReason,
+    errors: contextualizeExecutionErrors(options, errors),
+  });
 }

@@ -11,11 +11,75 @@ import { gradeTranscript, verdict } from './grade.mjs';
 
 const mean = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 
+function protocolEvents(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function toolCallsWithRawEvidence(transcript) {
+  const identified = new Map();
+  const unidentified = [];
+  const add = (call) => {
+    const id = call.toolCallId ?? call.id;
+    if (id === undefined || id === null) {
+      unidentified.push(call);
+      return;
+    }
+    const existing = identified.get(id) ?? {};
+    identified.set(id, { ...existing, ...call, id: call.id ?? id });
+  };
+
+  for (const call of transcript.toolCalls) add(call);
+  for (const event of protocolEvents(transcript.raw)) {
+    const update = event?.method === 'session/update' ? event.params?.update : null;
+    if (['tool_call', 'tool_call_update'].includes(update?.sessionUpdate) && update.toolCallId) add(update);
+  }
+  return [...identified.values(), ...unidentified];
+}
+
+function usageWithRawEvidence(transcript) {
+  const updates = protocolEvents(transcript.raw)
+    .filter((event) => event?.method === 'session/update')
+    .map((event) => event.params?.update)
+    .filter((update) => update?.sessionUpdate === 'usage_update');
+  if (!updates.length) return transcript.usage;
+
+  const usage = {
+    inputTokens: null, outputTokens: null, context: null, cost: null, known: false,
+    ...(transcript.usage && typeof transcript.usage === 'object' ? transcript.usage : {}),
+  };
+  for (const update of updates) {
+    if (Object.hasOwn(update, 'used') || Object.hasOwn(update, 'size')) {
+      usage.context = { used: update.used ?? null, size: update.size ?? null };
+    }
+    if (update.cost != null) usage.cost = update.cost;
+    usage.known = true;
+  }
+  return usage;
+}
+
+function reportedUsdCost(usage) {
+  const cost = usage?.cost;
+  return typeof cost?.currency === 'string' && cost.currency.toUpperCase() === 'USD'
+    && Number.isFinite(cost.amount) ? cost.amount : null;
+}
+
+function sumReportedUsdCosts(receipts) {
+  const costs = receipts.map((receipt) => reportedUsdCost(receipt.usage)).filter((cost) => cost !== null);
+  return costs.length ? costs.reduce((total, cost) => total + cost, 0) : null;
+}
+
 function gradingTranscript(transcript) {
   return {
     ...transcript,
     transport: 'acp',
-    toolCalls: transcript.toolCalls.map((call) => {
+    toolCalls: toolCallsWithRawEvidence(transcript).map((call) => {
       // Copilot omits native tool names; identify Skill only by its exact
       // native title and structured input, not by arbitrary display text.
       if (call.name === undefined && call.kind === 'other'
@@ -25,6 +89,7 @@ function gradingTranscript(transcript) {
       }
       return call;
     }),
+    usage: usageWithRawEvidence(transcript),
     raw: Array.isArray(transcript.raw) ? JSON.stringify(transcript.raw) : transcript.raw,
   };
 }
@@ -162,12 +227,12 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           delta: mean(withRuns) != null && mean(withoutRuns) != null ? mean(withRuns) - mean(withoutRuns) : null,
           verdict: verdict(withRuns, withoutRuns), invalidRuns: records.filter((r) => !r.valid).length,
           partial: records.length !== runs * (ablation === 'with-without' ? 2 : 1) || records.some((r) => !r.valid),
-          partialReason: stopReason, costUsd: null,
+          partialReason: stopReason, costUsd: sumReportedUsdCosts(records),
         };
       });
       const overallScore = mean(cases.flatMap((c) => c.withRuns));
       return makeRunResult({
-        ...base, cases, sessions, overallScore, costUsd: null, canaryTouched: receipts.some((receipt) => receipt.canaryTouched),
+        ...base, cases, sessions, overallScore, costUsd: sumReportedUsdCosts(receipts), canaryTouched: receipts.some((receipt) => receipt.canaryTouched),
         status: stopReason ? sessions ? CLIENT_STATUS.PARTIAL : CLIENT_STATUS.ERROR
           : overallScore === 1 ? CLIENT_STATUS.PASSED : CLIENT_STATUS.BELOW_THRESHOLD,
         caveats: stopReason ? [...base.caveats, stopReason] : base.caveats,

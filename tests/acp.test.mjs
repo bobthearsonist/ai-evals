@@ -102,6 +102,15 @@ test('buildAcpLaunch creates a side-effect-free launch and frozen judge isolatio
   }), /does not provide required capability: mcp-free/);
 });
 
+test('missing ACP executable returns an actionable client, profile and path error', async () => {
+  const executable = resolve(root, 'missing-acp.exe');
+  const result = await executeAcp(fakeOptions('normal', { command: executable }));
+  assert.equal(result.complete, false);
+  assert.match(result.errors.join('; '), /ACP client custom \(profile custom\)/);
+  assert.ok(result.errors.join('; ').includes(executable));
+  assert.match(result.errors.join('; '), /Verify the executable exists/);
+});
+
 test('real ACP child process streams text, tool calls, usage and protocol events', async () => {
   const result = await executeAcp(fakeOptions());
   assert.equal(result.complete, true, JSON.stringify(result));
