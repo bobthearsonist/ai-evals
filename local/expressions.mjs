@@ -20,6 +20,10 @@ const add = (expression, phase, argument, build, named = false) => {
 
 add('the suite fixtures are available', 'Context', 'none', () => ({ fixtures: true }));
 add('the user asks:', 'Action', 'docString', (doc) => ({ prompt: doc }));
+add('the AI judge confirms:', 'Outcome', 'docString',
+  (text) => ({ judgeCriteria: [{ text }] }));
+add('the AI judge confirms {string}:', 'Outcome', 'docString',
+  (id, text) => ({ judgeCriteria: [{ id, text }] }));
 
 for (const [verb, type] of [['contains', 'contains'], ['does not contain', 'not_contains'], ['starts with', 'starts_with']]) {
   add(`the response ${verb} {string}`, 'Outcome', 'none',
@@ -75,4 +79,11 @@ export function nameCheck(check) {
   const semantic = Object.fromEntries(Object.entries(check).sort(([a], [b]) => a.localeCompare(b)));
   const hash = createHash('sha256').update(JSON.stringify(semantic)).digest('hex').slice(0, 12);
   return { ...check, name: `${check.type}-${check.target}-${hash}`.replaceAll('_', '-') };
+}
+
+export function nameCriterion(criterion) {
+  return {
+    ...criterion,
+    id: criterion.id ?? `meaning-${createHash('sha256').update(criterion.text).digest('hex').slice(0, 12)}`,
+  };
 }

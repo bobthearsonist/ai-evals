@@ -75,6 +75,19 @@ const caseSchema = {
     prompt: { type: 'string', minLength: 1, pattern: '\\S' },
     shouldTrigger: { type: 'boolean' },
     checks: { type: 'array', minItems: 1, items: { $ref: checkSchema.$id } },
+    judgeCriteria: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        required: ['id', 'text'],
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$' },
+          text: { type: 'string', minLength: 1, pattern: '\\S' },
+        },
+      },
+    },
     fixtures: { type: 'boolean' },
     samples: {
       type: 'object',

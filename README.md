@@ -1,5 +1,8 @@
 # ai-evals
 
+**[JUDGE_PROMPT.md](JUDGE_PROMPT.md)** is the shared judge's actual runtime
+prompt, packaged with the engine. Edit it here, not in consumer rubric files.
+
 Shared Node.js engine for local skill evaluations. Skill source,
 cases, fixtures and run artifacts belong to the consuming repository, not this
 one. Extracted from `bobthearsonist/ai` at `f39fe21`; only synthetic test data is
@@ -185,6 +188,23 @@ locations and Examples rows appear in validation errors, not prompts.
 Unknown steps, ambiguous IDs, orphan samples, unsupported dialects and
 fixtures escaping the suite's `fixtures` directory fail offline.
 
+Co-locate semantic requirements with the scenario's deterministic assertions:
+
+```gherkin
+    And the AI judge confirms "explanation":
+      """
+      The response explains why the recommendation fits the user's situation.
+      Equivalent reasoning is acceptable; merely naming the recommendation is insufficient.
+      """
+```
+
+`And the AI judge confirms:` also accepts a Doc String and generates a stable
+content-hash criterion ID. Prefer explicit IDs when editing expectations.
+Each criterion gets an independent verdict; all its requirements must hold.
+These expectations are archived in the policy, never sent to candidates, and
+never included in deterministic sample grading. Keep at least one deterministic
+assertion in every scenario.
+
 ## Results and deterministic regrading
 
 Both clients execute through the same ACP runner and shared host policy.
@@ -308,29 +328,33 @@ AI judging is a separate command, never an automatic stage of `run`,
 `run-all`, deterministic `regrade`, or historical score calculation:
 
 ```powershell
-ai-evals judge evals\.work\local-runs\<run> --client claude --model MODEL_ID --rubric .\rubric.txt --dry-run
-ai-evals judge evals\.work\local-runs\<run> --client claude --model MODEL_ID --rubric .\rubric.txt --approve-sessions N
+ai-evals judge evals\.work\local-runs\<run> --client claude --model MODEL_ID --dry-run
+ai-evals judge evals\.work\local-runs\<run> --client claude --model MODEL_ID --approve-sessions N
 ```
 
 Choose the judge runtime explicitly, independently of the archived candidate
 runtime. `N` must exactly equal the eligible complete answers selected
 (optionally `--case ID`); invalid receipts and incomplete captures are
 ineligible. A missing/mismatched approval refuses before inference.
-`--rubric` reads a UTF-8 text rubric applied to every selected answer, or a
+By default, the judge reads semantic criteria from the **recorded Gherkin
+policy**, not today's source files. Cases without criteria are reported as
+skipped; explicitly selecting one is an error.
+For advisory compatibility only, `--rubric` reads a UTF-8 text rubric applied to every selected answer, or a
 `.json` object mapping case IDs to non-empty rubric strings. With a JSON map,
 only cases with a rubric are eligible; other archived answers are reported
 as skipped. An explicit `--case ID` without a matching rubric is an error.
 Dry-run/approval counts include only eligible mapped answers. JSON rubrics
 are not candidate prompts or deterministic checks.
 Judge output must be strict
-`{verdict,rationale,evidence}` JSON; pass/fail requires exact evidence quotes
+`{criteria:[{id,verdict,rationale,evidence}]}` JSON with each requested ID
+exactly once. The host aggregates fail before abstain before pass; pass/fail requires exact evidence quotes
 from the answer. Evidence is trimmed and matching surrounding straight or smart
 quote wrappers are removed before exact-match verification. Invalid, missing or unsupported output abstains rather than
 passing. A native profile unable to verify tool/skill/MCP exclusion refuses.
 There is no retry or implicit model selection. `--dry-run` reports the exact
 eligible session count without inference or assessment writes.
 
-Assessments record input/rubric hashes, runtime/model, raw output, usage and
+Assessments record answer/policy/prompt hashes, runtime/model signature, raw output, usage and
 validation status under a uniquely named `assessments` artifact. They never
 overwrite candidate traces, `normalized.json`, deterministic scores or
 history. These assessments are advisory. A bounded live check completed on
@@ -345,6 +369,38 @@ It uses the same package-pinned adapter and sterile home as candidate sessions,
 with no tools or skills and no project settings. It requires adapter version
 `0.94.0` and confirmation of the requested model before the prompt is sent.
 Missing executables, version mismatches and unconfirmed models fail closed.
+
+### Calibration-gated scoring
+
+Advisory verdicts never alter scores. To explicitly produce a separate combined
+score, first calibrate the exact case policies, judge prompt, runtime, model,
+dependency versions and timeout settings:
+
+```powershell
+ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\judge-labels.json --dry-run
+ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\judge-labels.json --approve-sessions 40
+ai-evals judge evals\.work\local-runs\<run> --client claude --model haiku --calibration <calibration-artifact.json> --approve-sessions N
+```
+
+Labels are repository-owned, independently reviewed answers:
+`{"schemaVersion":1,"samples":[{"id":"example-1","caseId":"my-case","text":"Captured answer.","expected":"pass"}]}`.
+The gate requires at least 40 unique answers across five distinct policies,
+at least four pass and four fail labels per policy, and 100% agreement with
+no invalid/abstaining assessments. Use varied paraphrases, clear omissions,
+contradictions and injection attempts, then assess held-out candidate answers.
+This conservative gate is a local acceptance rule, not statistical proof of
+accuracy or permission to score other policies. Synthetic fake-server tests
+do not establish live reliability.
+
+Scoring recomputes the gate from raw assessments rather than trusting a saved
+eligible flag, and refuses uncovered or changed policies/settings.
+Each deterministic check and semantic criterion contributes one equal vote.
+Missing, mismatched, duplicate, invalid or abstaining assessments make scores
+`null`, including the affected case and overall summary; they are not dropped.
+The uniquely named `calibrated-judge-score` artifact retains `deterministicScore`
+and never changes original normalized results or history. `--rubric` cannot
+be combined with `--calibration`. Calibration is opt-in and approval counts
+remain exact.
 
 ## Engine and adapters
 

@@ -101,7 +101,7 @@ test('judge archive adapter writes separate assessments and never mutates candid
       calls++;
       assert.equal(mode, 'judge');
       return {
-        finalText: JSON.stringify({ verdict: 'pass', rationale: 'Matches.', evidence: ['hello'] }),
+        finalText: JSON.stringify({ criteria: [{ id: 'rubric', verdict: 'pass', rationale: 'Matches.', evidence: ['hello'] }] }),
         complete: true, model, toolCalls: [], errors: [], raw: [], usage: null,
       };
     },
@@ -136,7 +136,7 @@ test('per-case JSON rubrics select semantic cases and preserve independent appro
     assert.ok(!prompt.includes('exact-format'));
     return {
       complete: true, model, errors: [], toolCalls: [],
-      finalText: JSON.stringify({ verdict: 'pass', rationale: 'A greeting.', evidence: ['hello'] }),
+      finalText: JSON.stringify({ criteria: [{ id: 'rubric', verdict: 'pass', rationale: 'A greeting.', evidence: ['hello'] }] }),
     };
   };
   await assert.rejects(judgeArchive({ ...options, execute, approveSessions: 2 }), /approval/i);

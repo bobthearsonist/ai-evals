@@ -74,6 +74,11 @@ export function validateV2Case(c) {
   });
   if (!Array.isArray(c?.checks)) return problems;
   const names = new Set();
+  const criteria = new Set();
+  for (const criterion of Array.isArray(c.judgeCriteria) ? c.judgeCriteria : []) {
+    if (criteria.has(criterion?.id)) problems.push(`duplicate judge criterion "${criterion?.id}"`);
+    criteria.add(criterion?.id);
+  }
   for (const [index, check] of c.checks.entries()) {
     const label = typeof check?.name === 'string' ? `checks[${index}] (${check.name})` : `checks[${index}]`;
     for (const problem of validateCheck(check)) {

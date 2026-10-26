@@ -23,7 +23,7 @@ const rubric = 'The subject begins with feat: and describes the requested change
 const response = async (file) => JSON.parse(await readFile(join(fixtureDir, file), 'utf8'));
 const stubExecute = (execution) => async () => execution;
 const executeFor = async (file, overrides = {}) => ({
-  finalText: JSON.stringify(await response(file)),
+  finalText: JSON.stringify({ criteria: [{ id: 'rubric', ...await response(file) }] }),
   toolCalls: [],
   raw: 'fixture ACP events',
   complete: true,
@@ -58,7 +58,8 @@ test('accepts a valid pass and keeps verdict separate from deterministic grading
   assert.equal(result.judgement.verdict, 'pass');
   assert.deepEqual(result.judgement.evidence, ['feat: add the requested feature']);
   assert.equal(result.assessment.answerSha256.length, 64);
-  assert.equal(result.assessment.rubricSha256.length, 64);
+  assert.equal(result.assessment.policySha256.length, 64);
+  assert.equal(result.assessment.promptSha256.length, 64);
   assert.equal(result.assessment.usage.inputTokens, 100);
 });
 
@@ -81,7 +82,7 @@ test('judge orchestration builds the real Claude profile without forbidden metad
 test('normalizes wrapped evidence before exact-match verification', async () => {
   for (const wrapped of ['  "feat: add the requested feature"  ', "'feat: add the requested feature'", '“feat: add the requested feature”', ' ‘feat: add the requested feature’ ']) {
     const execution = await executeFor('pass.json', {
-      finalText: JSON.stringify({ verdict: 'pass', rationale: 'Matches.', evidence: [wrapped] }),
+      finalText: JSON.stringify({ criteria: [{ id: 'rubric', verdict: 'pass', rationale: 'Matches.', evidence: [wrapped] }] }),
     });
     const result = await judgeAnswer(args({ execute: stubExecute(execution) }));
     assert.equal(result.status, 'judged', result.reason);

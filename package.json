@@ -22,7 +22,7 @@
   "exports": {
     "./*": "./local/*.mjs"
   },
-  "files": ["local/*.mjs", "README.md"],
+  "files": ["local/*.mjs", "README.md", "JUDGE_PROMPT.md"],
   "scripts": {
     "test": "node --test tests/*.test.mjs"
   },

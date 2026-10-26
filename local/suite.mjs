@@ -3,7 +3,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { generateMessages } from '@cucumber/gherkin';
 import { IdGenerator, SourceMediaType } from '@cucumber/messages';
 import { validateCase } from './contract.mjs';
-import { compileStep, nameCheck } from './expressions.mjs';
+import { compileStep, nameCheck, nameCriterion } from './expressions.mjs';
 
 const at = (uri, location = {}) => `${uri}:${location.line ?? 1}:${location.column ?? 1}`;
 const fail = (uri, location, message) => { throw new Error(`${at(uri, location)}: ${message}`); };
@@ -119,6 +119,14 @@ export function compileFeature(source, { uri = '<feature>' } = {}) {
           if (++prompts !== 1) throw new Error('exactly one When prompt required');
           c.prompt = compiled.value.prompt;
           if (!c.prompt.trim()) throw new Error('exactly one non-empty prompt Doc String required');
+        } else if (compiled.value.judgeCriteria) {
+          if (prompts !== 1) throw new Error('Then requires a preceding When prompt');
+          c.judgeCriteria ??= [];
+          for (const value of compiled.value.judgeCriteria) {
+            const criterion = nameCriterion(value);
+            if (c.judgeCriteria.some(({ id }) => id === criterion.id)) throw new Error(`duplicate judge criterion ${criterion.id}`);
+            c.judgeCriteria.push(criterion);
+          }
         } else {
           if (prompts !== 1) throw new Error('Then requires a preceding When prompt');
           for (const value of compiled.value) {
