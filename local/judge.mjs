@@ -13,7 +13,7 @@ export const JUDGE_PROFILE = Object.freeze({
   mcp: false,
 });
 
-export const JUDGE_PROMPT = readFileSync(new URL('../JUDGE_PROMPT.md', import.meta.url), 'utf8');
+export const JUDGE_PROMPT = readFileSync(new URL('../JUDGE_PROMPT.md', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
 export const JUDGE_PROMPT_SHA256 = hash(JUDGE_PROMPT);
 
 const criterionSchema = {

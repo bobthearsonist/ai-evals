@@ -48,7 +48,8 @@ test('Gherkin compiles semantic Doc Strings separately from deterministic checks
 });
 
 test('top-level visible prompt is the actual runtime source and task context is included', () => {
-  assert.equal(JUDGE_PROMPT, readFileSync(new URL('../JUDGE_PROMPT.md', import.meta.url), 'utf8'));
+  assert.equal(JUDGE_PROMPT, readFileSync(new URL('../JUDGE_PROMPT.md', import.meta.url), 'utf8').replaceAll('\r\n', '\n'));
+  assert.ok(!JUDGE_PROMPT.includes('\r'));
   assert.equal(JUDGE_PROMPT_SHA256.length, 64);
   const prompt = buildJudgePrompt({
     answer: { text: 'change', valid: true, complete: true, caseId: c.id, arm: 'with', repetition: 1 },
