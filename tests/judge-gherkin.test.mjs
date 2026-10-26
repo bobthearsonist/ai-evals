@@ -50,6 +50,9 @@ test('Gherkin compiles semantic Doc Strings separately from deterministic checks
 test('top-level visible prompt is the actual runtime source and task context is included', () => {
   assert.equal(JUDGE_PROMPT, readFileSync(new URL('../JUDGE_PROMPT.md', import.meta.url), 'utf8').replaceAll('\r\n', '\n'));
   assert.ok(!JUDGE_PROMPT.includes('\r'));
+  assert.ok(!JUDGE_PROMPT.includes('```'), 'the output example must not encourage Markdown fences');
+  assert.match(JUDGE_PROMPT, /clear implication or paraphrase/);
+  assert.match(JUDGE_PROMPT, /genuinely unmet claim/);
   assert.equal(JUDGE_PROMPT_SHA256.length, 64);
   const prompt = buildJudgePrompt({
     answer: { text: 'change', valid: true, complete: true, caseId: c.id, arm: 'with', repetition: 1 },
@@ -75,6 +78,8 @@ test('judge validates exact criterion coverage and host derives aggregate verdic
     mutate(parsed);
     assert.ok(validateJudgement(JSON.stringify(parsed), 'change', policy).reason);
   }
+  assert.equal(validateJudgement(`\`\`\`json\n${output()}\n\`\`\``, 'change', policy).reason,
+    'judge output is not valid JSON', 'fenced output must remain invalid');
 });
 
 test('Gherkin planner selects semantic cases and archives criterion provenance', async () => {
