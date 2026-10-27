@@ -354,6 +354,13 @@ passing. A native profile unable to verify tool/skill/MCP exclusion refuses.
 There is no retry or implicit model selection. `--dry-run` reports the exact
 eligible session count without inference or assessment writes.
 
+The packaged root `JUDGE_PROMPT.md` uses evidence-first acceptance checking:
+locate support for each required claim, summarize coverage, then emit the
+verdict. It accepts equivalent meaning without adding elaboration requirements.
+Whether a proposal or completed execution is needed comes from the criterion,
+not a blanket rule. This is a prompt strategy, not an accuracy guarantee;
+measure the chosen model on labeled answers and fresh held-out examples.
+
 Assessments record answer/policy/prompt hashes, runtime/model signature, raw output, usage and
 validation status under a uniquely named `assessments` artifact. They never
 overwrite candidate traces, `normalized.json`, deterministic scores or

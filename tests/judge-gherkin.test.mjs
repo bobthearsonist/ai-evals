@@ -53,6 +53,10 @@ test('top-level visible prompt is the actual runtime source and task context is 
   assert.ok(!JUDGE_PROMPT.includes('```'), 'the output example must not encourage Markdown fences');
   assert.match(JUDGE_PROMPT, /clear implication or paraphrase/);
   assert.match(JUDGE_PROMPT, /genuinely unmet claim/);
+  assert.match(JUDGE_PROMPT, /If the criterion accepts a proposed\s+method, assess that method/);
+  assert.match(JUDGE_PROMPT, /evidence first, then the coverage rationale, then the verdict/);
+  const shape = JSON.parse(JUDGE_PROMPT.split('\n').find((line) => line.startsWith('{"criteria":')));
+  assert.deepEqual(Object.keys(shape.criteria[0]), ['id', 'evidence', 'rationale', 'verdict']);
   assert.equal(JUDGE_PROMPT_SHA256.length, 64);
   const prompt = buildJudgePrompt({
     answer: { text: 'change', valid: true, complete: true, caseId: c.id, arm: 'with', repetition: 1 },
