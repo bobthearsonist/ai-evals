@@ -25,6 +25,37 @@ add('the AI judge confirms:', 'Outcome', 'docString',
 add('the AI judge confirms {string}:', 'Outcome', 'docString',
   (id, text) => ({ judgeCriteria: [{ id, text }] }));
 
+const judgeActions = new Map([
+  ['identifies', 'The response must recognize the specified problem, concept, or fact. Merely repeating the question does not establish recognition.'],
+  ['recommends', 'The response must advise the specified course of action. Merely describing an option or quoting someone else\'s advice is insufficient.'],
+  ['explains', 'The response must explain the specified relationship or rationale. Mentioning its components without connecting them is insufficient.'],
+  ['conditions', 'The response must make the specified action dependent on the specified prerequisite. Mentioning the action and prerequisite separately is insufficient.'],
+  ['does not endorse', 'The response must not advocate the specified position anywhere in the answer. Merely quoting, discussing, or rejecting that position is not endorsement. The response need not explicitly reject or mention it to satisfy this criterion.'],
+]);
+
+add('the AI judge verifies:', 'Outcome', 'dataTable', (table) => {
+  const [header, ...rows] = table.rows;
+  const columns = ['id', 'action', 'expectation'];
+  if (!header || header.cells.length !== columns.length
+    || header.cells.some((cell, i) => cell.value !== columns[i])
+    || !rows.length || rows.some((row) => row.cells.length !== columns.length)) {
+    throw new Error('AI judge verifies requires an id, action, expectation header and at least one three-column row');
+  }
+  return {
+    judgeCriteria: rows.map((row, i) => {
+      const [id, action, expectation] = row.cells.map((cell) => cell.value.trim());
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+        throw new Error(`AI judge verifies row ${i + 1} requires an explicit kebab-case id`);
+      }
+      if (!judgeActions.has(action)) {
+        throw new Error(`AI judge verifies row ${i + 1} has unsupported action "${action}"; expected one of: ${[...judgeActions.keys()].join(', ')}`);
+      }
+      if (!expectation) throw new Error(`AI judge verifies row ${i + 1} requires a non-empty expectation`);
+      return { id, text: `${judgeActions.get(action)}\nExpectation: ${expectation}` };
+    }),
+  };
+});
+
 for (const [verb, type] of [['contains', 'contains'], ['does not contain', 'not_contains'], ['starts with', 'starts_with']]) {
   add(`the response ${verb} {string}`, 'Outcome', 'none',
     (value) => [{ type, target: 'last_message', value }], true);

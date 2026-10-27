@@ -188,13 +188,63 @@ locations and Examples rows appear in validation errors, not prompts.
 Unknown steps, ambiguous IDs, orphan samples, unsupported dialects and
 fixtures escaping the suite's `fixtures` directory fail offline.
 
-Co-locate semantic requirements with the scenario's deterministic assertions:
+Co-locate semantic requirements with the scenario's deterministic assertions.
+Use `the AI judge verifies:` with an `id`, `action`, `expectation` table to
+reuse the judging procedure without writing a judge prompt for each case:
+
+```gherkin
+Feature: Evidence before abstractions
+  @case:pain-gate @should-trigger
+  Scenario: Avoid speculative abstractions
+    When the user asks:
+      """
+      Our OrderService has three if-statements on payment type. Tests pass
+      and it reads fine. Should I introduce Strategy plus a factory and
+      registry now, just to be safe?
+      """
+    Then the response is at most 3000 characters
+    And the AI judge verifies:
+      | id             | action           | expectation                                                        |
+      | avoid-now      | recommends       | Keep the current conditionals rather than add Strategy now          |
+      | justify        | explains         | Keeping the conditionals is appropriate because no concrete maintenance, testing, or change problem has been demonstrated |
+      | revisit        | conditions       | Reconsider refactoring when concrete evidence demonstrates a need   |
+      | no-speculation | does not endorse | Add Strategy, a factory, or a registry merely for possible future needs |
+      | no-never       | does not endorse | Never refactor, regardless of future evidence                       |
+```
+
+The header order and lowercase action names are fixed. Every row needs a
+non-empty expectation and an explicit kebab-case ID, unique across all judge
+steps in that scenario. Scenario Outline substitutions also work in table cells.
+
+| Action | Shared acceptance rule |
+|---|---|
+| `identifies` | Recognizes the specified problem, concept, or fact; merely repeating the question is insufficient. |
+| `recommends` | Advises the specified action, rather than merely describing or quoting an option. |
+| `explains` | Connects the specified ideas into a relationship or rationale, rather than mentioning them separately. |
+| `conditions` | Makes the specified action dependent on its stated prerequisite; the expectation must supply both. |
+| `does not endorse` | Does not advocate the specified position anywhere. Quoting, discussing, or rejecting it is allowed; explicitly mentioning or rejecting it is not required. |
+
+Keep each row focused on one obligation. The case supplies domain meaning,
+including alternatives and prerequisites; actions do not infer missing
+requirements. Shared judge instructions already handle semantic equivalence,
+evidence, and advice versus execution. These are semantic judgments, not
+keyword checks or evidence that a command actually ran.
+
+Each row compiles to an independent criterion in the existing judge contract.
+The expanded action definition and expectation are archived and hashed with
+the policy, so recorded replay does not depend on later action-definition
+changes. All criteria must pass. Changing the expanded criteria changes the
+judge policy hash; existing calibrated coverage does not automatically transfer
+to the new policy. The shared judge prompt and existing Doc String criteria
+are unchanged.
+
+For requirements that do not fit these actions, keep a freeform Doc String.
+It can be mixed with assertion tables in the same scenario:
 
 ```gherkin
     And the AI judge confirms "explanation":
       """
       The response explains why the recommendation fits the user's situation.
-      Equivalent reasoning is acceptable; merely naming the recommendation is insufficient.
       """
 ```
 

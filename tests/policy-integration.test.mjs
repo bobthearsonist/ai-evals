@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from '../local/policy.mjs';
 import { createAcpRunner } from '../local/acp-runner.mjs';
+import { compileFeature } from '../local/suite.mjs';
+import { judgePolicy, judgePolicySha256 } from '../local/judge.mjs';
 
 const definition = {
   schemaVersion: 2, id: 'greeting', prompt: 'Say hello.', shouldTrigger: false,
@@ -39,6 +41,29 @@ test('policy is immutable, samples stay out, current replay is explicit', () => 
 test('legacy archives require deliberate current-policy replay', () => temporary((root) => {
   assert.throws(() => replayPolicy(root, { currentCases: [definition] }), /--policy current/);
   assert.equal(replayPolicy(root, { currentCases: [definition], mode: 'current' }).sha256, policySnapshot([definition]).sha256);
+}));
+
+test('semantic action expansion is archived and replayed without consulting current definitions', () => temporary((root) => {
+  const feature = `Feature: Advice
+  @case:advice @should-not-trigger
+  Scenario: Keep a small change
+    When the user asks:
+      """
+      Is a rewrite necessary?
+      """
+    Then the response contains "change"
+    And the AI judge verifies:
+      | id | action | expectation |
+      | keep | recommends | Keep the small change |
+`;
+  const [compiled] = compileFeature(feature);
+  archivePolicy(root, [compiled], {});
+  const [current] = compileFeature(feature.replace('Keep the small change |', 'Rewrite the service |'));
+  const [recorded] = replayPolicy(root, { currentCases: [current] }).cases;
+  assert.deepEqual(recorded.judgeCriteria, compiled.judgeCriteria);
+  assert.match(recorded.judgeCriteria[0].text, /must advise the specified course of action/);
+  assert.equal(judgePolicySha256(judgePolicy(recorded)), judgePolicySha256(judgePolicy(compiled)));
+  assert.notEqual(judgePolicySha256(judgePolicy(recorded)), judgePolicySha256(judgePolicy(current)));
 }));
 
 test('offline CLI validation and dry run never probe the native executable', () => {
