@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { judgeArchivedRun, planJudgeRequests, storeAssessment } from './judge.mjs';
 import { replayPolicy } from './policy.mjs';
-import { assertCalibratedCases, scoreJudgedAnswers } from './judge-score.mjs';
+import { scoreJudgedAnswers } from './judge-score.mjs';
 import { reportRun } from './report.mjs';
 
 function loadRubric(path) {
@@ -49,8 +49,7 @@ export function archivedJudgeAnswers({ runDir, parse, requireReceipt = true, cas
   return answers;
 }
 
-export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rubricPath, calibrationPath, model, client, approveSessions, timeoutMs, execute, dryRun = false }) {
-  if (rubricPath && calibrationPath) throw new Error('calibrated scoring requires recorded Gherkin criteria, not --rubric');
+export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rubricPath, model, client, approveSessions, timeoutMs, execute, dryRun = false }) {
   const rubric = rubricPath ? loadRubric(rubricPath) : undefined;
   const cases = rubricPath ? undefined : replayPolicy(runDir).cases;
   if (caseIds && typeof rubric === 'object' && caseIds.some((id) => !Object.hasOwn(rubric, id))) {
@@ -61,14 +60,8 @@ export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rub
     throw new Error('selected case has no Gherkin judge criteria');
   }
   const plan = planJudgeRequests({ answers, rubric, cases, caseIds });
-  const calibration = calibrationPath ? JSON.parse(readFileSync(calibrationPath, 'utf8')) : undefined;
   const selectedIds = new Set(answers.filter((answer) =>
     cases?.find((c) => c.id === answer.caseId)?.judgeCriteria?.length).map((answer) => answer.caseId));
-  if (calibration) {
-    assertCalibratedCases({
-      calibration, cases: cases.filter((c) => selectedIds.has(c.id)), client, model, timeoutMs,
-    });
-  }
   if (dryRun) {
     const { plannedSessions, skipped } = plan;
     return { dryRun: true, client, model, plannedSessions, skipped };
@@ -77,11 +70,11 @@ export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rub
     answers, rubric, cases, model, client, approveSessions, timeoutMs,
     archiveDir: runDir, caseIds, ...(execute ? { execute } : {}),
   });
-  if (calibration) {
+  if (cases) {
     const report = reportRun(runDir, { includeAnswer: true, parse });
     report.cases = report.cases.filter((trace) => selectedIds.has(trace.caseId));
     const scoring = scoreJudgedAnswers({
-      report, cases, assessments: result.assessments, calibration, client, model, timeoutMs,
+      report, cases, assessments: result.assessments, client, model, timeoutMs,
     });
     const scorePath = await storeAssessment({ archiveDir: runDir, assessment: scoring });
     return { ...result, scoring, scorePath };

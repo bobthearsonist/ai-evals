@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { getRunner, validateCapabilities } from './contract.mjs';
@@ -12,7 +12,6 @@ import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from './po
 import { createAcpRunner } from './acp-runner.mjs';
 import { judgeArchive } from './judge-cli.mjs';
 import { reportRun, renderReport } from './report.mjs';
-import { calibrateJudge } from './judge-calibration.mjs';
 
 try {
 if (process.argv[2] === 'run-all') {
@@ -26,7 +25,7 @@ if (process.argv.some((a) => a === '--runners' || a.startsWith('--runners='))
   process.exit(process.exitCode ?? 0);
 }
 if (process.argv.includes('--help') || !process.argv[2]) {
-  console.log(`usage: ai-evals <validate|preflight|smoke|run|run-all|regrade|judge|calibrate|report> [arguments]
+  console.log(`usage: ai-evals <validate|preflight|smoke|run|run-all|regrade|judge|report> [arguments]
 
 Commands:
   validate --suite NAME                 Validate cases and policy offline
@@ -36,7 +35,6 @@ Commands:
   run-all [--suite NAME | --suites A,B] Run selected suites and clients
   regrade RUN_DIR                        Regrade archived traces offline
   judge RUN_DIR --client ID --model ID  Assess recorded Gherkin criteria
-  calibrate --client ID --model ID      Measure judge agreement with labels
   report RUN_DIR [--answer]              Show per-trace checks and Skill calls
 
 Common flags: --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH
@@ -47,10 +45,7 @@ run-all flags: --suites A,B --claude-model ID --copilot-model ID --opencode-mode
               --claude-exe PATH --copilot-exe PATH --opencode-exe PATH
               --claude-acp-profile PATH --copilot-acp-profile PATH
 Regrade flags: --policy recorded|current --suite NAME
-Judge flags: --case ID (repeatable) --calibration PATH (explicit combined scoring)
-             --rubric PATH (advisory compatibility only; excludes --calibration)
-Calibration flags: --labels PATH --suite NAME (optional; defaults to all suites)
-                   --diagnostic (agreement only; never authorizes scoring)
+Judge flags: --case ID (repeatable) --rubric PATH (advisory compatibility only)
 Report flag: --answer
 Exit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.`);
   process.exit(0);
@@ -76,16 +71,12 @@ const { values, positionals } = parseArgs({
     policy: { type: 'string' },
     'acp-profile': { type: 'string' },
     rubric: { type: 'string' },
-    calibration: { type: 'string' },
-    labels: { type: 'string' },
-    diagnostic: { type: 'boolean', default: false },
     json: { type: 'boolean', default: false },
     answer: { type: 'boolean', default: false },
   },
 });
 
 const command = positionals[0];
-if (values.diagnostic && command !== 'calibrate') throw new Error('--diagnostic is only supported by calibrate');
 if (command === 'report') {
   if (positionals.length !== 2) throw new Error('usage: ai-evals report <runDir> [--answer] [--json]');
   const result = reportRun(resolve(positionals[1]), { includeAnswer: values.answer });
@@ -93,30 +84,7 @@ if (command === 'report') {
   process.exit(0);
 }
 if (values.answer && command !== 'report') throw new Error('--answer is only supported by report');
-if (values.calibration && command !== 'judge') throw new Error('--calibration is only supported by judge');
-if (values.labels && command !== 'calibrate') throw new Error('--labels is only supported by calibrate');
 const config = resolveConfig({ configPath: values.config, flags: { skillRoot: values['skill-root'], casesDir: values['cases-dir'], outputDir: values['output-dir'], resultsDir: values['results-dir'] } });
-if (command === 'calibrate') {
-  if (!values.client || !values.model || !values.labels) throw new Error('calibrate requires --client, --model and --labels');
-  if (positionals.length !== 1 || values.case || values.runs || values.rubric || values.exe || values['acp-profile']) {
-    throw new Error('calibrate reads labeled examples and Gherkin cases, not candidate execution flags');
-  }
-  const folders = values.suite ? [suiteSettings(config, values.suite).casesFolder]
-    : Object.keys(config.suites).length ? [...new Set(Object.entries(config.suites).map(([id, s]) => s.cases ?? id))]
-      : readdirSync(config.casesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-  const cases = folders.flatMap((folder) => loadSuite(join(config.casesDir, folder)));
-  const timeoutMs = Number(values['timeout-seconds'] ?? 120) * 1000;
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error('invalid judge timeout');
-  const result = await calibrateJudge({
-    cases, labels: JSON.parse(readFileSync(resolve(values.labels), 'utf8')),
-    client: values.client, model: values.model, timeoutMs,
-    approveSessions: Number(values['approve-sessions'] ?? 0), dryRun: values['dry-run'],
-    diagnostic: values.diagnostic,
-    archiveDir: join(config.outputDir, `judge-calibration-${new Date().toISOString().replace(/[:.]/g, '-')}`),
-  });
-  console.log(JSON.stringify(result, null, 2));
-  process.exit(result.dryRun || result.passed ? 0 : 1);
-}
 const SKILL_ROOTS = config.skillsRoots;
 const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => existsSync(join(p, 'SKILL.md')));
 if (values.policy !== undefined && command !== 'regrade') throw new Error('--policy is only supported by regrade');
@@ -147,7 +115,6 @@ if (command === 'judge') {
   const result = await judgeArchive({
     runDir, parse: archivedRunner.parseTrace, requireReceipt: true,
     caseIds: values.case?.length ? values.case : undefined, rubricPath: values.rubric && resolve(values.rubric),
-    calibrationPath: values.calibration && resolve(values.calibration),
     model: values.model, client: values.client, approveSessions: Number(values['approve-sessions'] ?? 0), timeoutMs, dryRun: values['dry-run'],
   });
   console.log(JSON.stringify(result, null, 2));

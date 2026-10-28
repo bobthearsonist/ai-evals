@@ -13,7 +13,7 @@ and Copilot, including the library API, CLI and multi-runner.
 Native candidate profiles use temporary homes, explicit read-only tools and
 controlled skill workspaces. Bounded Claude ACP smoke and judge runs have
 completed in the consuming repositories; this is not cross-client acceptance
-or judge calibration.
+or judge accuracy.
 SDK/plugin-eval execution and replay code
 have been removed; there is no transport selector or fallback.
 ACP is not an isolation guarantee. Gherkin compiles to a shared deterministic
@@ -234,8 +234,7 @@ Each row compiles to an independent criterion in the existing judge contract.
 The expanded action definition and expectation are archived and hashed with
 the policy, so recorded replay does not depend on later action-definition
 changes. All criteria must pass. Changing the expanded criteria changes the
-judge policy hash; existing calibrated coverage does not automatically transfer
-to the new policy. The shared judge prompt and existing Doc String criteria
+judge policy hash; archived assessments remain bound to their original policy. The shared judge prompt and existing Doc String criteria
 are unchanged.
 
 For requirements that do not fit these actions, keep a freeform Doc String.
@@ -414,11 +413,11 @@ measure the chosen model on labeled answers and fresh held-out examples.
 Assessments record answer/policy/prompt hashes, runtime/model signature, raw output, usage and
 validation status under a uniquely named `assessments` artifact. They never
 overwrite candidate traces, `normalized.json`, deterministic scores or
-history. These assessments are advisory. A bounded live check completed on
+history. These assessments remain separate from deterministic history. A bounded live check completed on
 2026-10-23: one Claude `haiku` candidate and one judge session for each of nine
 mapped rubrics; all nine produced valid, exact-evidence assessments (eight
 `pass`, one `fail`). This verifies the exercised archive-to-judge execution
-path only, not judge accuracy calibration or cross-provider quality. The
+path only, not judge agreement acceptance or cross-provider quality. The
 built-in judge profile is Claude-only and source-verified for its pinned
 adapter, not independently live-audited. Other native judge runtimes remain
 unsupported.
@@ -427,85 +426,38 @@ with no tools or skills and no project settings. It requires adapter version
 `0.94.0` and confirmation of the requested model before the prompt is sent.
 Missing executables, version mismatches and unconfirmed models fail closed.
 
-### Calibration-gated scoring
+### Semantic scoring
 
-This is the canonical semantic-judge operating procedure for engine consumers.
-Advisory verdicts never alter deterministic scores.
+`judge RUN_DIR --client ID --model ID` reads the recorded Gherkin policy,
+assesses its semantic criteria and writes a separate `judge-score` artifact.
+Plan with `--dry-run`, then approve the exact live session count with
+`--approve-sessions N`. No labeled-answer workflow or acceptance artifact is
+required. `run`, `run-all` and deterministic `regrade` do not invoke the judge.
 
-1. **Author and validate offline.** Use shared assertion actions where they fit,
-   otherwise a freeform criterion. Run `validate` and the repository's offline
-   tests. Check the expanded criteria, not just the table syntax: those criteria
-   and the task form the snapshotted, hashed policy.
-2. **Check agreement diagnostically.** Use a small labeled set to exercise an
-   action, policy or prompt change with `calibrate --diagnostic`. Plan first;
-   approve the exact session count separately. Exit 0 means every label agreed,
-   with no invalid or abstaining assessment, regardless of scoring sample size.
-   The artifact has kind `judge-agreement` and `purpose: "diagnostic"` and can
-   **never authorize scoring** (older engines reject its distinct kind),
-   even if it meets the coverage thresholds. A shared-action regression does not
-   establish coverage for arbitrary policies using that action.
-3. **Accept exact policies for scoring.** Without `--diagnostic`, calibration
-   requires both agreement and the coverage gate below. Only then may explicit
-   `judge --calibration PATH` produce a separate combined score. Default judging
-   remains advisory.
-
-For a small diagnostic set:
-
-```powershell
-ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\diagnostic-labels.json --diagnostic --dry-run
-ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\diagnostic-labels.json --diagnostic --approve-sessions N
-```
-
-For scoring acceptance:
-
-```powershell
-ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\judge-labels.json --dry-run
-ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\judge-labels.json --approve-sessions 40
-ai-evals judge evals\.work\local-runs\<run> --client claude --model haiku --calibration <calibration-artifact.json> --approve-sessions N
-```
-
-Labels are repository-owned, independently reviewed answers:
-`{"schemaVersion":1,"samples":[{"id":"example-1","caseId":"my-case","text":"Captured answer.","expected":"pass"}]}`.
-The gate requires at least 40 unique answers across five distinct policies,
-at least four pass and four fail labels per policy, and 100% agreement with
-no invalid/abstaining assessments. Use varied paraphrases, clear omissions,
-contradictions and injection attempts, then assess held-out candidate answers.
-This conservative gate is a local acceptance rule, not statistical proof of
-accuracy or permission to score other policies. Synthetic fake-server tests
-do not establish live reliability.
-
-Scoring recomputes the gate from raw assessments rather than trusting a saved
-eligible flag, and refuses uncovered or changed policies/settings.
-The scoring unit matches the labels: **one whole-answer semantic verdict**,
-not independent criterion votes. All criteria must pass for the semantic score
-to be 1; any failure makes it 0. Criterion verdicts, rationales and quotes remain
-visible as `semanticCriteria` diagnostics, not calibrated row-level claims.
+The semantic component is one whole-answer vote: all criteria must pass for 1,
+otherwise a valid failure scores 0. Criterion verdicts, rationales and quotes
+remain `semanticCriteria` diagnostics, not separate scoring votes.
 The combined score is `(deterministicScore + semanticScore) / 2`, with fixed
-50/50 component weights regardless of the number of deterministic checks or
-semantic rows. The deterministic component retains its existing check average.
-Splitting an equivalent requirement into several rows therefore does not change
-its scoring weight. This intentionally replaces schema-v1 per-check/per-row
-weighting; newly written score artifacts use schema version 2. Compare like
-versions, and do not rewrite historical artifacts.
-Missing, mismatched, duplicate, invalid or abstaining assessments make scores
-`null`, including the affected case and overall summary; they are not dropped.
-The uniquely named `calibrated-judge-score` artifact retains `deterministicScore`
-and never changes original normalized results or history. `--rubric` cannot
-be combined with `--calibration`. Calibration is opt-in and approval counts
-remain exact.
+50/50 weights regardless of assertion-row count. The deterministic component
+retains its existing check average.
 
-`reliability.agreementPassed` and `agreementProblems` report label agreement;
-`coverageProblems` reports scoring sample requirements separately. Top-level
-`passed` and the CLI exit status follow the selected purpose. Agreement alone is
-not scoring eligibility. Legacy calibration artifacts without `purpose` retain
-the strict scoring gate and only certify whole-answer agreement.
+Scoring validates the current prompt/runtime/model/settings signature, exact
+policy and answer hashes, trace provenance, strict output schema and evidence.
+Missing, duplicate, mismatched, invalid or abstaining judgments make the trace,
+affected case and overall score `null`; invalid candidates remain represented,
+not silently omitted. Original traces, normalized deterministic scores and
+history are never rewritten. New combined artifacts use schema version 2.
+Historical score artifacts retain their original format and meaning.
 
-Changes to expanded criterion text/IDs/order, the task, shared action definitions,
-judge prompt, model/runtime, dependency versions or timeout settings invalidate
-affected coverage. Re-run offline checks and diagnostics after changes; obtain
-new exact-policy acceptance before combined scoring. Assertion-table migrations
-change policy hashes even when the intent sounds similar. Historical runs and
-synthetic labels are not new independent human-reviewed accuracy evidence.
+The `--rubric` compatibility path returns standalone assessments only because
+it has no recorded suite policy for combined scoring. Prefer recorded Gherkin
+assertions. Scoring is a measurement, not a guarantee of judge accuracy;
+synthetic fixtures and successful transport do not establish production quality.
+
+Library callers use `scoreJudgedAnswers({ report, cases, assessments, client,
+model, timeoutMs })`; `judgeArchive` performs this step for recorded suite
+criteria. The former labeled-answer commands, modules, flags and scoring
+acceptance gate have been removed.
 
 ## Engine and adapters
 

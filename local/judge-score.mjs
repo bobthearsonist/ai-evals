@@ -1,24 +1,12 @@
 import { createHash } from 'node:crypto';
 import { verdict } from './grade.mjs';
-import { assessCalibration } from './judge-calibration.mjs';
-import { judgePolicy, judgePolicySha256, validateJudgement } from './judge.mjs';
+import { JUDGE_PROMPT_SHA256, judgePolicy, judgePolicySha256, judgeSignature, validateJudgement } from './judge.mjs';
 
 const mean = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 
-export function assertCalibratedCases({ calibration, cases, client, model, timeoutMs }) {
-  const reliability = assessCalibration(calibration, { client, model, timeoutMs });
-  if (!reliability.eligible) throw new Error(`judge calibration is not eligible for scoring: ${reliability.problems.join('; ')}`);
-  for (const c of cases) {
-    if (!reliability.policyHashes.includes(judgePolicySha256(judgePolicy(c)))) {
-      throw new Error(`case ${c.id} is not covered by this judge calibration`);
-    }
-  }
-  return reliability;
-}
-
-export function scoreJudgedAnswers({ report, cases, assessments, calibration, client, model, timeoutMs }) {
+export function scoreJudgedAnswers({ report, cases, assessments, client, model, timeoutMs }) {
   const selectedCases = cases.filter((c) => report.cases.some((r) => r.caseId === c.id));
-  const reliability = assertCalibratedCases({ calibration, cases: selectedCases, client, model, timeoutMs });
+  const signature = judgeSignature({ client, model, timeoutMs });
   const seen = new Set();
   const results = report.cases.map((trace) => {
     const c = selectedCases.find((item) => item.id === trace.caseId);
@@ -32,11 +20,12 @@ export function scoreJudgedAnswers({ report, cases, assessments, calibration, cl
     seen.add(key);
     const assessment = matches[0]?.assessment;
     const policy = judgePolicy(c);
-    const checked = assessment ? validateJudgement(assessment.rawOutput, trace.answer, policy) : null;
+    const checked = assessment && typeof trace.answer === 'string'
+      ? validateJudgement(assessment.rawOutput, trace.answer, policy) : null;
     const bound = matches.length === 1 && assessment?.schemaVersion === 2
       && assessment?.status === 'judged' && assessment?.runtime === client && assessment?.model === model
-      && assessment?.judgeSignature === reliability.judgeSignature
-      && assessment?.promptSha256 === calibration.promptSha256
+      && assessment?.judgeSignature === signature
+      && assessment?.promptSha256 === JUDGE_PROMPT_SHA256
       && assessment?.settings?.profile === 'ai-evals-judge'
       && assessment?.settings?.tools === false && assessment?.settings?.skills === false
       && assessment?.settings?.mcp === false && assessment?.settings?.retries === 0
@@ -78,9 +67,9 @@ export function scoreJudgedAnswers({ report, cases, assessments, calibration, cl
     };
   });
   return {
-    schemaVersion: 2, kind: 'calibrated-judge-score',
+    schemaVersion: 2, kind: 'judge-score',
     weighting: 'equal weight for deterministic score and aggregate semantic verdict; criteria are diagnostic only',
-    judgeSignature: reliability.judgeSignature, calibrationId: calibration.assessmentId ?? null,
+    judgeSignature: signature,
     valid: results.length > 0 && results.every((r) => r.valid),
     overallScore: results.length > 0 && results.every((r) => r.valid) ? mean(results.filter((r) => r.arm === 'with').map((r) => r.score)) : null,
     cases: summaries, traces: results,

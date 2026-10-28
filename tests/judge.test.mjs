@@ -7,6 +7,7 @@ import {
   buildJudgePrompt, judgeAnswer, judgeArchivedRun, planJudgeRequests, storeAssessment,
 } from '../local/judge.mjs';
 import { buildAcpLaunch } from '../local/acp.mjs';
+import { scoreJudgedAnswers } from '../local/judge-score.mjs';
 
 const fixtureDir = fileURLToPath(new URL('./fixtures/judge/', import.meta.url));
 const artifactDir = join(fixtureDir, 'storage');
@@ -283,4 +284,47 @@ test('judgeAnswer archive records provenance, runtime, raw output and observed u
   assert.equal(archived.rawTrace, undefined);
   assert.equal(sampleAnswer.rawTrace.includes('Use feat:'), true);
   assert.equal(archived.settings.retries, 0);
+});
+
+test('suite scoring uses a fixed aggregate semantic vote without labeled acceptance artifacts', async () => {
+  const c = { id: sampleAnswer.caseId, prompt: 'Write a commit subject.',
+    judgeCriteria: [{ id: 'rubric', text: rubric }, { id: 'secondary', text: 'Describe the change.' }] };
+  const trace = { caseId: c.id, arm: 'with', repetition: 1, answer: sampleAnswer.text,
+    valid: true, score: 1, checks: [{ name: 'literal', passed: true }] };
+  const execution = await executeFor('pass.json');
+  const output = JSON.parse(execution.finalText);
+  output.criteria.push({ ...output.criteria[0], id: 'secondary', verdict: 'fail' });
+  const assessment = await judgeAnswer(args({
+    policy: { prompt: c.prompt, criteria: c.judgeCriteria },
+    execute: stubExecute({ ...execution, finalText: JSON.stringify(output) }),
+  }));
+  const options = { report: { cases: [trace] }, cases: [c], assessments: [assessment],
+    client: 'copilot', model: 'test-model' };
+  const scored = scoreJudgedAnswers(options);
+  assert.equal(scored.kind, 'judge-score');
+  assert.equal(scored.overallScore, 0.5);
+  assert.equal(scored.traces[0].semanticScore, 0);
+  assert.equal(scored.traces[0].semanticCriteria.length, 2);
+  assert.equal(scored.traces[0].checks.filter((check) => check.name.startsWith('judge:')).length, 1);
+  assert.equal(trace.checks.length, 1);
+  for (const altered of [
+    { assessments: [] },
+    { assessments: [assessment, assessment] },
+    { model: 'other' },
+    { report: { cases: [{ ...trace, valid: false }] } },
+    { report: { cases: [{ ...trace, answer: 'tampered' }] } },
+    { report: { cases: [{ ...trace, answer: undefined }] } },
+    { report: { cases: [{ ...trace, score: null }] } },
+    { assessments: [{ assessment: { ...assessment.assessment, status: 'invalid' } }] },
+    { assessments: [{ assessment: { ...assessment.assessment, settings: { ...assessment.assessment.settings, tools: true } } }] },
+    { assessments: [{ assessment: { ...assessment.assessment, rawOutput: '{}' } }] },
+    { assessments: [{ assessment: { ...assessment.assessment, rawOutput: JSON.stringify({
+      criteria: c.judgeCriteria.map(({ id }) => ({ id, verdict: 'abstain', rationale: 'Uncertain.', evidence: [] })),
+    }) } }] },
+  ]) {
+    const invalid = scoreJudgedAnswers({ ...options, ...altered });
+    assert.equal(invalid.valid, false);
+    assert.equal(invalid.overallScore, null);
+    assert.equal(invalid.cases[0].withScore, null);
+  }
 });

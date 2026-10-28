@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { archivedJudgeAnswers, judgeArchive } from '../local/judge-cli.mjs';
+import { archivePolicy } from '../local/policy.mjs';
+import { compileFeature } from '../local/suite.mjs';
+import { parseAcpTrace } from '../local/acp-runner.mjs';
 
 function temporary(fn) {
   const root = mkdtempSync(join(tmpdir(), 'eval-judge-cli-'));
@@ -168,4 +171,41 @@ test('JSON rubric mistakes and explicit unmapped selections fail before executio
   writeFileSync(textPath, ' \n');
   await assert.rejects(judgeArchive({ ...options, rubricPath: textPath }), /must not be empty/);
   assert.equal(calls, 0);
+}));
+
+test('recorded suite judging writes combined scores directly and preserves invalid traces and history', () => temporary(async (root) => {
+  const cases = compileFeature(`Feature: Greeting
+  @case:greeting @should-not-trigger
+  Scenario: Greet
+    When the user asks:
+      """
+      Say hello.
+      """
+    Then the response contains "hello"
+    And the AI judge verifies:
+      | id       | action     | expectation       |
+      | greeting | identifies | A friendly hello. |
+`);
+  archivePolicy(root, cases, {});
+  const normalized = '{"client":"claude","transport":"acp","overallScore":1}';
+  writeFileSync(join(root, 'normalized.json'), normalized);
+  const path = archive(root, { valid: true, exitCode: 0 });
+  const original = JSON.stringify({ type: 'ai-evals.acp', schemaVersion: 1,
+    transcript: { finalText: 'hello', complete: true, toolCalls: [], raw: '' } });
+  writeFileSync(path, original);
+  const options = { runDir: root, parse: parseAcpTrace, requireReceipt: true,
+    client: 'claude', model: 'test-model', approveSessions: 1,
+    execute: async ({ model }) => ({ model, complete: true, errors: [], toolCalls: [],
+      finalText: JSON.stringify({ criteria: [{ id: 'greeting', verdict: 'pass', rationale: 'A greeting.', evidence: ['hello'] }] }) }) };
+  const scored = await judgeArchive(options);
+  assert.equal(scored.scoring.valid, true);
+  assert.equal(scored.scoring.overallScore, 1);
+  assert.ok(existsSync(scored.scorePath));
+  writeFileSync(`${path}.receipt.json`, '{"valid":false,"exitCode":1}');
+  const invalid = await judgeArchive({ ...options, approveSessions: 0 });
+  assert.equal(invalid.scoring.valid, false);
+  assert.equal(invalid.scoring.overallScore, null);
+  assert.equal(invalid.scoring.cases[0].withScore, null);
+  assert.equal(readFileSync(path, 'utf8'), original);
+  assert.equal(readFileSync(join(root, 'normalized.json'), 'utf8'), normalized);
 }));
