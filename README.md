@@ -429,9 +429,34 @@ Missing executables, version mismatches and unconfirmed models fail closed.
 
 ### Calibration-gated scoring
 
-Advisory verdicts never alter scores. To explicitly produce a separate combined
-score, first calibrate the exact case policies, judge prompt, runtime, model,
-dependency versions and timeout settings:
+This is the canonical semantic-judge operating procedure for engine consumers.
+Advisory verdicts never alter deterministic scores.
+
+1. **Author and validate offline.** Use shared assertion actions where they fit,
+   otherwise a freeform criterion. Run `validate` and the repository's offline
+   tests. Check the expanded criteria, not just the table syntax: those criteria
+   and the task form the snapshotted, hashed policy.
+2. **Check agreement diagnostically.** Use a small labeled set to exercise an
+   action, policy or prompt change with `calibrate --diagnostic`. Plan first;
+   approve the exact session count separately. Exit 0 means every label agreed,
+   with no invalid or abstaining assessment, regardless of scoring sample size.
+   The artifact has kind `judge-agreement` and `purpose: "diagnostic"` and can
+   **never authorize scoring** (older engines reject its distinct kind),
+   even if it meets the coverage thresholds. A shared-action regression does not
+   establish coverage for arbitrary policies using that action.
+3. **Accept exact policies for scoring.** Without `--diagnostic`, calibration
+   requires both agreement and the coverage gate below. Only then may explicit
+   `judge --calibration PATH` produce a separate combined score. Default judging
+   remains advisory.
+
+For a small diagnostic set:
+
+```powershell
+ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\diagnostic-labels.json --diagnostic --dry-run
+ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\diagnostic-labels.json --diagnostic --approve-sessions N
+```
+
+For scoring acceptance:
 
 ```powershell
 ai-evals calibrate --config evals\evals.json --client claude --model haiku --labels .\judge-labels.json --dry-run
@@ -451,13 +476,36 @@ do not establish live reliability.
 
 Scoring recomputes the gate from raw assessments rather than trusting a saved
 eligible flag, and refuses uncovered or changed policies/settings.
-Each deterministic check and semantic criterion contributes one equal vote.
+The scoring unit matches the labels: **one whole-answer semantic verdict**,
+not independent criterion votes. All criteria must pass for the semantic score
+to be 1; any failure makes it 0. Criterion verdicts, rationales and quotes remain
+visible as `semanticCriteria` diagnostics, not calibrated row-level claims.
+The combined score is `(deterministicScore + semanticScore) / 2`, with fixed
+50/50 component weights regardless of the number of deterministic checks or
+semantic rows. The deterministic component retains its existing check average.
+Splitting an equivalent requirement into several rows therefore does not change
+its scoring weight. This intentionally replaces schema-v1 per-check/per-row
+weighting; newly written score artifacts use schema version 2. Compare like
+versions, and do not rewrite historical artifacts.
 Missing, mismatched, duplicate, invalid or abstaining assessments make scores
 `null`, including the affected case and overall summary; they are not dropped.
 The uniquely named `calibrated-judge-score` artifact retains `deterministicScore`
 and never changes original normalized results or history. `--rubric` cannot
 be combined with `--calibration`. Calibration is opt-in and approval counts
 remain exact.
+
+`reliability.agreementPassed` and `agreementProblems` report label agreement;
+`coverageProblems` reports scoring sample requirements separately. Top-level
+`passed` and the CLI exit status follow the selected purpose. Agreement alone is
+not scoring eligibility. Legacy calibration artifacts without `purpose` retain
+the strict scoring gate and only certify whole-answer agreement.
+
+Changes to expanded criterion text/IDs/order, the task, shared action definitions,
+judge prompt, model/runtime, dependency versions or timeout settings invalidate
+affected coverage. Re-run offline checks and diagnostics after changes; obtain
+new exact-policy acceptance before combined scoring. Assertion-table migrations
+change policy hashes even when the intent sounds similar. Historical runs and
+synthetic labels are not new independent human-reviewed accuracy evidence.
 
 ## Engine and adapters
 

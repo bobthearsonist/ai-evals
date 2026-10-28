@@ -50,6 +50,7 @@ Regrade flags: --policy recorded|current --suite NAME
 Judge flags: --case ID (repeatable) --calibration PATH (explicit combined scoring)
              --rubric PATH (advisory compatibility only; excludes --calibration)
 Calibration flags: --labels PATH --suite NAME (optional; defaults to all suites)
+                   --diagnostic (agreement only; never authorizes scoring)
 Report flag: --answer
 Exit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.`);
   process.exit(0);
@@ -77,12 +78,14 @@ const { values, positionals } = parseArgs({
     rubric: { type: 'string' },
     calibration: { type: 'string' },
     labels: { type: 'string' },
+    diagnostic: { type: 'boolean', default: false },
     json: { type: 'boolean', default: false },
     answer: { type: 'boolean', default: false },
   },
 });
 
 const command = positionals[0];
+if (values.diagnostic && command !== 'calibrate') throw new Error('--diagnostic is only supported by calibrate');
 if (command === 'report') {
   if (positionals.length !== 2) throw new Error('usage: ai-evals report <runDir> [--answer] [--json]');
   const result = reportRun(resolve(positionals[1]), { includeAnswer: values.answer });
@@ -108,10 +111,11 @@ if (command === 'calibrate') {
     cases, labels: JSON.parse(readFileSync(resolve(values.labels), 'utf8')),
     client: values.client, model: values.model, timeoutMs,
     approveSessions: Number(values['approve-sessions'] ?? 0), dryRun: values['dry-run'],
+    diagnostic: values.diagnostic,
     archiveDir: join(config.outputDir, `judge-calibration-${new Date().toISOString().replace(/[:.]/g, '-')}`),
   });
   console.log(JSON.stringify(result, null, 2));
-  process.exit(result.dryRun || result.reliability.eligible ? 0 : 1);
+  process.exit(result.dryRun || result.passed ? 0 : 1);
 }
 const SKILL_ROOTS = config.skillsRoots;
 const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => existsSync(join(p, 'SKILL.md')));

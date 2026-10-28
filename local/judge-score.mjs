@@ -44,17 +44,23 @@ export function scoreJudgedAnswers({ report, cases, assessments, calibration, cl
       && assessment?.policySha256 === judgePolicySha256(policy)
       && typeof trace.answer === 'string'
       && assessment?.answerSha256 === createHash('sha256').update(trace.answer).digest('hex');
-    const valid = trace.valid && bound && !checked?.reason && checked?.judgement.criteria.every((item) => item.verdict !== 'abstain');
-    const judgeChecks = valid ? checked.judgement.criteria.map((item) => ({
+    const deterministicValid = Number.isFinite(trace.score) && trace.score >= 0 && trace.score <= 1;
+    const valid = trace.valid && deterministicValid && bound && !checked?.reason && checked?.judgement.criteria.every((item) => item.verdict !== 'abstain');
+    const semanticCriteria = valid ? checked.judgement.criteria.map((item) => ({
       name: `judge:${item.id}`, passed: item.verdict === 'pass', reason: item.rationale, evidence: item.evidence,
     })) : [];
-    const checks = [...trace.checks, ...judgeChecks];
+    const semanticScore = valid ? Number(checked.judgement.verdict === 'pass') : null;
+    const checks = [...trace.checks, ...(valid ? [{
+      name: 'judge:aggregate', passed: semanticScore === 1,
+      reason: 'Whole-answer semantic verdict; individual criteria are diagnostic only.',
+    }] : [])];
     return {
       caseId: trace.caseId, arm: trace.arm, repetition: trace.repetition,
       valid: Boolean(valid), deterministicScore: trace.score,
-      score: valid ? checks.filter((check) => check.passed === true).length / checks.length : null,
-      invalidReason: valid ? null : trace.invalidReason ?? (!bound ? 'missing, ambiguous or mismatched judge assessment' : checked?.reason ?? 'judge abstained'),
-      checks,
+      semanticScore, score: valid ? (trace.score + semanticScore) / 2 : null,
+      invalidReason: valid ? null : trace.invalidReason ?? (!deterministicValid ? 'invalid deterministic score'
+        : !bound ? 'missing, ambiguous or mismatched judge assessment' : checked?.reason ?? 'judge abstained'),
+      checks, semanticCriteria,
     };
   });
   const summaries = selectedCases.map((c) => {
@@ -72,8 +78,8 @@ export function scoreJudgedAnswers({ report, cases, assessments, calibration, cl
     };
   });
   return {
-    schemaVersion: 1, kind: 'calibrated-judge-score',
-    weighting: 'one vote per deterministic check and semantic criterion',
+    schemaVersion: 2, kind: 'calibrated-judge-score',
+    weighting: 'equal weight for deterministic score and aggregate semantic verdict; criteria are diagnostic only',
     judgeSignature: reliability.judgeSignature, calibrationId: calibration.assessmentId ?? null,
     valid: results.length > 0 && results.every((r) => r.valid),
     overallScore: results.length > 0 && results.every((r) => r.valid) ? mean(results.filter((r) => r.arm === 'with').map((r) => r.score)) : null,

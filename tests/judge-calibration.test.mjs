@@ -78,6 +78,9 @@ test('calibration recomputes accuracy and scope rather than trusting a saved eli
   assert.equal(reliability.correct, 40);
   assert.ok(storedPath.endsWith('.json'));
   assert.equal(assessCalibration(calibration, runtime).eligible, true);
+  const legacy = structuredClone(calibration);
+  delete legacy.purpose;
+  assert.equal(assessCalibration(legacy, runtime).eligible, true);
   for (const mutation of [
     (x) => { x.entries.pop(); },
     (x) => { x.entries[0].sample.expected = 'fail'; },
@@ -124,6 +127,7 @@ test('calibrated scores combine checks, preserve deterministic scores, and fail 
     { ...options, assessments: [assessment, assessment] },
     { ...options, report: { cases: [{ ...trace, answer: 'tampered answer' }] } },
     { ...options, report: { cases: [{ ...trace, valid: false, invalidReason: 'invalid receipt' }] } },
+    { ...options, report: { cases: [{ ...trace, score: null }] } },
     { ...options, assessments: [{ assessment: { ...assessment.assessment, settings: { ...assessment.assessment.settings, tools: true } } }] },
   ]) {
     const scored = scoreJudgedAnswers(altered);
@@ -137,6 +141,99 @@ test('calibrated scores combine checks, preserve deterministic scores, and fail 
   assert.equal(nullScore.traces[0].score, null);
   assert.match(nullScore.traces[0].invalidReason, /abstained/);
   assert.equal(createHash('sha256').update(trace.answer).digest('hex'), assessment.assessment.answerSha256);
+}));
+
+test('diagnostic agreement is independent of scoring coverage and never authorizes scoring', () => temporary(async (archiveDir) => {
+  const actionCases = cases.map((c, i) => compileFeature(feature(i).replace(
+    /    And the AI judge confirms "meaning":[\s\S]*$/,
+    `    And the AI judge verifies:
+      | id      | action   | expectation                       |
+      | meaning | explains | The reason for choice ${i}. |
+`,
+  ))[0]);
+  const smallLabels = { schemaVersion: 1, samples: [labels.samples[0], labels.samples[4]] };
+  const options = { cases: actionCases, labels: smallLabels, ...runtime, approveSessions: 2, execute, archiveDir };
+  const diagnostic = await calibrateJudge({ ...options, diagnostic: true });
+  assert.equal(diagnostic.passed, true);
+  assert.equal(diagnostic.calibration.purpose, 'diagnostic');
+  assert.equal(diagnostic.calibration.kind, 'judge-agreement', 'older engines must reject diagnostic artifacts');
+  assert.equal(diagnostic.reliability.agreementPassed, true);
+  assert.equal(diagnostic.reliability.eligible, false);
+  assert.ok(diagnostic.reliability.coverageProblems.length > 0);
+  assert.deepEqual(diagnostic.reliability.agreementProblems, []);
+  assert.throws(() => assertCalibratedCases({
+    calibration: diagnostic.calibration, cases: [actionCases[0]], ...runtime,
+  }), /not eligible/);
+  const strict = await calibrateJudge(options);
+  assert.equal(strict.passed, false);
+  assert.equal(strict.reliability.agreementPassed, true);
+  assert.equal(strict.reliability.eligible, false);
+  const wrong = await calibrateJudge({
+    ...options, diagnostic: true,
+    labels: { schemaVersion: 1, samples: smallLabels.samples.map((s) => ({ ...s, expected: s.expected === 'pass' ? 'fail' : 'pass' })) },
+  });
+  assert.equal(wrong.reliability.agreementPassed, false);
+  assert.equal(wrong.passed, false);
+  assert.equal(wrong.reliability.agreementProblems.length, 2);
+  for (const finalText of ['{}', JSON.stringify({
+    criteria: [{ id: 'meaning', verdict: 'abstain', rationale: 'Uncertain.', evidence: [] }],
+  })]) {
+    const invalid = await calibrateJudge({
+      ...options, diagnostic: true, execute: async ({ model }) => ({
+        model, complete: true, errors: [], toolCalls: [], finalText,
+      }),
+    });
+    assert.equal(invalid.passed, false, 'invalid and abstaining diagnostics fail agreement');
+  }
+  const full = await calibrateJudge({ ...options, labels, approveSessions: 40, diagnostic: true });
+  assert.equal(full.reliability.agreementPassed, true);
+  assert.deepEqual(full.reliability.coverageProblems, []);
+  assert.equal(assessCalibration(full.calibration, runtime).eligible, false);
+  const saved = JSON.parse(readFileSync(full.storedPath, 'utf8'));
+  assert.equal(saved.purpose, 'diagnostic');
+  assert.equal(saved.kind, 'judge-agreement');
+  delete saved.purpose;
+  assert.throws(() => assessCalibration(saved, runtime), /invalid judge calibration/);
+}));
+
+test('whole-answer calibration cannot grant individual criterion scoring votes', () => temporary(async (archiveDir) => {
+  const splitCases = cases.map((c) => ({
+    ...c, judgeCriteria: [...c.judgeCriteria, { id: 'secondary', text: 'Also explain the limitation.' }],
+  }));
+  // The secondary verdict is wrong on negative labels but masked by the first failure.
+  const maskedExecute = async (request) => {
+    const response = await execute(request);
+    const result = JSON.parse(response.finalText);
+    result.criteria.push({ ...result.criteria[0], id: 'secondary', verdict: 'pass' });
+    return { ...response, finalText: JSON.stringify(result) };
+  };
+  const score = async (policies, runner, checks) => {
+    const { calibration, reliability } = await calibrateJudge({
+      cases: policies, labels, ...runtime, approveSessions: 40, execute: runner, archiveDir,
+    });
+    assert.equal(reliability.eligible, true, 'labels certify only whole-answer agreement');
+    const trace = {
+      caseId: policies[0].id, arm: 'with', repetition: 1, answer: 'heldout fail answer',
+      valid: true, score: 1, checks,
+    };
+    const assessment = await judgeAnswer({
+      answer: { caseId: trace.caseId, arm: trace.arm, repetition: 1, text: trace.answer, valid: true, complete: true },
+      policy: { prompt: policies[0].prompt, criteria: policies[0].judgeCriteria },
+      ...runtime, approveSessions: 1, execute: runner,
+    });
+    return scoreJudgedAnswers({ report: { cases: [trace] }, cases: policies, assessments: [assessment], calibration, ...runtime });
+  };
+  const combined = await score(cases, execute, [{ name: 'literal', passed: true }]);
+  const split = await score(splitCases, maskedExecute, [
+    { name: 'literal-a', passed: true }, { name: 'literal-b', passed: true },
+  ]);
+  assert.equal(split.schemaVersion, 2);
+  assert.equal(split.overallScore, 0.5);
+  assert.equal(split.overallScore, combined.overallScore, 'row counts do not set component weights');
+  assert.equal(split.traces[0].semanticScore, 0);
+  assert.equal(split.traces[0].semanticCriteria.length, 2);
+  assert.equal(split.traces[0].semanticCriteria[1].passed, true, 'row verdict remains diagnostic only');
+  assert.deepEqual(split.traces[0].checks.filter((c) => c.name.startsWith('judge:')).map((c) => c.passed), [false]);
 }));
 
 test('recorded Gherkin CLI and calibrated archive scoring preserve invalid cases and original history', () => temporary(async (root) => {
@@ -157,6 +254,15 @@ test('recorded Gherkin CLI and calibrated archive scoring preserve invalid cases
   assert.equal(calibrationPlan.status, 0, calibrationPlan.stderr);
   assert.equal(JSON.parse(calibrationPlan.stdout).plannedSessions, 40);
   assert.equal(existsSync(join(root, 'runs')), false);
+  const diagnosticPlan = spawnSync(process.execPath, [cli, 'calibrate', '--config', configPath,
+    '--client', runtime.client, '--model', runtime.model, '--labels', labelsPath, '--diagnostic', '--dry-run'], { encoding: 'utf8' });
+  assert.equal(diagnosticPlan.status, 0, diagnosticPlan.stderr);
+  assert.equal(JSON.parse(diagnosticPlan.stdout).purpose, 'diagnostic');
+  for (const command of ['validate', 'report']) {
+    const misplacedFlag = spawnSync(process.execPath, [cli, command, '--diagnostic'], { encoding: 'utf8' });
+    assert.equal(misplacedFlag.status, 2);
+    assert.match(misplacedFlag.stderr, /only supported by calibrate/);
+  }
 
   const runDir = join(root, 'run');
   mkdirSync(runDir);

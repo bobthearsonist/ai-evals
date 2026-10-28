@@ -35,7 +35,9 @@ export function planCalibration({ cases, labels }) {
 }
 
 export function assessCalibration(calibration, { client, model, timeoutMs = 120_000 } = {}) {
-  if (calibration?.schemaVersion !== 1 || calibration.kind !== 'judge-calibration'
+  const diagnostic = calibration?.kind === 'judge-agreement';
+  if (calibration?.schemaVersion !== 1 || !['judge-calibration', 'judge-agreement'].includes(calibration.kind)
+    || (diagnostic ? calibration.purpose !== 'diagnostic' : ![undefined, 'scoring'].includes(calibration.purpose))
     || !Array.isArray(calibration.entries) || !calibration.entries.length) {
     throw new Error('invalid judge calibration artifact');
   }
@@ -43,7 +45,8 @@ export function assessCalibration(calibration, { client, model, timeoutMs = 120_
   if (calibration.judgeSignature !== signature || calibration.promptSha256 !== JUDGE_PROMPT_SHA256) {
     throw new Error('calibration does not match the current prompt, runtime, model or settings');
   }
-  const problems = [];
+  const agreementProblems = [];
+  const coverageProblems = [];
   const policies = new Map();
   const ids = new Set();
   const texts = new Set();
@@ -73,19 +76,23 @@ export function assessCalibration(calibration, { client, model, timeoutMs = 120_
       && assessment.settings?.tools === false && assessment.settings?.skills === false
       && assessment.settings?.mcp === false && assessment.settings?.retries === 0
       && assessment.settings?.timeoutMs === timeoutMs;
-    if (bound && !checked.reason && checked.judgement.verdict === sample.expected
-      && checked.judgement.criteria.every((c) => c.verdict !== 'abstain')) correct++;
-    else problems.push(`sample ${sample.id}: ${!bound ? 'assessment provenance mismatch' : checked.reason ?? `expected ${sample.expected}, got ${checked.judgement.verdict}`}`);
+    const abstained = checked.judgement?.criteria.some((c) => c.verdict === 'abstain');
+    if (bound && !checked.reason && checked.judgement.verdict === sample.expected && !abstained) correct++;
+    else agreementProblems.push(`sample ${sample.id}: ${!bound ? 'assessment provenance mismatch' : checked.reason
+      ?? (abstained ? 'judge abstained' : `expected ${sample.expected}, got ${checked.judgement.verdict}`)}`);
   }
-  if (ids.size < CALIBRATION_GATE.minimumSamples) problems.push(`at least ${CALIBRATION_GATE.minimumSamples} unique labeled answers required`);
-  if (policies.size < CALIBRATION_GATE.minimumPolicies) problems.push(`at least ${CALIBRATION_GATE.minimumPolicies} distinct case policies required`);
+  if (ids.size < CALIBRATION_GATE.minimumSamples) coverageProblems.push(`at least ${CALIBRATION_GATE.minimumSamples} unique labeled answers required`);
+  if (policies.size < CALIBRATION_GATE.minimumPolicies) coverageProblems.push(`at least ${CALIBRATION_GATE.minimumPolicies} distinct case policies required`);
   for (const counts of policies.values()) {
     if (counts.pass < CALIBRATION_GATE.minimumPerLabelPerPolicy || counts.fail < CALIBRATION_GATE.minimumPerLabelPerPolicy) {
-      problems.push(`${counts.caseId}: at least ${CALIBRATION_GATE.minimumPerLabelPerPolicy} pass and fail labels each required`);
+      coverageProblems.push(`${counts.caseId}: at least ${CALIBRATION_GATE.minimumPerLabelPerPolicy} pass and fail labels each required`);
     }
   }
+  const problems = [...agreementProblems, ...coverageProblems];
+  if (diagnostic) problems.push('diagnostic agreement runs do not authorize scoring');
   return {
     eligible: problems.length === 0,
+    agreementPassed: agreementProblems.length === 0, agreementProblems, coverageProblems,
     samples: ids.size, correct, accuracy: correct / ids.size,
     policyHashes: [...policies.keys()], judgeSignature: signature, problems,
   };
@@ -93,10 +100,11 @@ export function assessCalibration(calibration, { client, model, timeoutMs = 120_
 
 export async function calibrateJudge({
   cases, labels, client, model, approveSessions, execute, archiveDir,
-  timeoutMs = 120_000, dryRun = false,
+  timeoutMs = 120_000, dryRun = false, diagnostic = false,
 }) {
   const requests = planCalibration({ cases, labels });
-  if (dryRun) return { dryRun: true, plannedSessions: requests.length, gate: CALIBRATION_GATE };
+  const purpose = diagnostic ? 'diagnostic' : 'scoring';
+  if (dryRun) return { dryRun: true, purpose, plannedSessions: requests.length, gate: CALIBRATION_GATE };
   if (approveSessions !== requests.length) throw new Error(`calibration requires exact approval for ${requests.length} session(s)`);
   if (!archiveDir) throw new Error('calibration requires an archive directory');
   const entries = [];
@@ -108,11 +116,14 @@ export async function calibrateJudge({
     entries.push({ sample, assessment });
   }
   const calibration = {
-    schemaVersion: 1, kind: 'judge-calibration', createdAt: new Date().toISOString(),
+    schemaVersion: 1, kind: diagnostic ? 'judge-agreement' : 'judge-calibration', purpose, createdAt: new Date().toISOString(),
     promptSha256: JUDGE_PROMPT_SHA256, judgeSignature: judgeSignature({ client, model, timeoutMs }),
     client, model, timeoutMs, entries,
   };
   const reliability = assessCalibration(calibration, { client, model, timeoutMs });
   const storedPath = await storeAssessment({ archiveDir, assessment: { ...calibration, reliability } });
-  return { plannedSessions: requests.length, calibration, reliability, storedPath };
+  return {
+    plannedSessions: requests.length, calibration, reliability, storedPath,
+    passed: diagnostic ? reliability.agreementPassed : reliability.eligible,
+  };
 }
