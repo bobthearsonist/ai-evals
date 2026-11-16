@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateCheck, extractCommitSubject } from '../local/assertions.mjs';
-import { gradeSample, validateCapabilities, validateCase, validateCheck } from '../local/contract.mjs';
+import { gradeSample, validateCapabilities, validateCase, validateCheck, validateSamples } from '../local/contract.mjs';
 import { gradeTranscript } from '../local/grade.mjs';
 
 const v2 = (checks) => ({
@@ -127,6 +127,41 @@ test('v2 grading scores available deterministic checks and preserves sample fail
   assert.deepEqual(gradeSample(c, 'an answer'), { passed: true, failed: [], invalid: false, errors: [] });
   assert.deepEqual(gradeSample(c, 'no match'), { passed: false, failed: ['has-answer'], invalid: false, errors: [] });
   assert.equal(gradeTranscript(c, transcript('an answer')).score, 1);
+});
+
+test('sample validation accepts declared examples across loaded cases', () => {
+  const cases = [
+    { ...v2([check('contains', { value: 'answer' })]), samples: { pass: ['answer', 'an answer'], fail: ['no', 'Answer'] } },
+    { ...v2([check('starts_with', { value: 'yes' })]), id: 'second', samples: { pass: ['yes'], fail: ['no', 'not yes'] } },
+  ];
+  assert.deepEqual(validateSamples(cases), []);
+});
+
+test('sample validation reports mislabeled examples and makes empty-answer rejection opt-in', () => {
+  const cases = [
+    { ...v2([check('contains', { value: 'answer' }, 'has-answer')]),
+      samples: { pass: ['answer', 'wrong'], fail: ['no', 'answer'] } },
+    { ...v2([check('max_length', { limit: 3 })]), id: 'second',
+      samples: { pass: ['yes'], fail: ['long'] } },
+  ];
+  const expected = [
+    'assertion-case samples.pass[1]: expected pass; has-answer',
+    'assertion-case samples.fail[1]: expected fail',
+  ];
+  assert.deepEqual(validateSamples(cases), expected);
+  assert.deepEqual(validateSamples(cases, { rejectEmptyAnswer: true }), [
+    ...expected,
+    'second empty answer: expected fail',
+  ]);
+});
+
+test('sample validation retains diagnostics when a passing example lacks required evidence', () => {
+  const c = { ...v2([check('tool_order', { before: 'Read', after: 'Edit' }, 'order')]),
+    samples: { pass: ['answer'], fail: ['no'] } };
+  const problems = validateSamples([c]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /^assertion-case samples\.pass\[0\]: expected pass; order: /);
+  assert.ok(problems[0].includes(gradeSample(c, 'answer').errors[0].diagnostic));
 });
 
 test('grading refuses obsolete or unversioned cases rather than silently applying compatibility policy', () => {

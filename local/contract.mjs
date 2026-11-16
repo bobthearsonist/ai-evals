@@ -128,3 +128,21 @@ export function gradeSample(c, text) {
     errors,
   };
 }
+
+export function validateSamples(cases, { rejectEmptyAnswer = false } = {}) {
+  const problems = [];
+  for (const c of cases) {
+    for (const [index, text] of c.samples.pass.entries()) {
+      const result = gradeSample(c, text);
+      if (!result.passed) {
+        const failures = [...result.failed, ...result.errors.map(({ name, diagnostic }) => `${name}: ${diagnostic}`)];
+        problems.push(`${c.id} samples.pass[${index}]: expected pass; ${failures.join('; ')}`);
+      }
+    }
+    for (const [index, text] of c.samples.fail.entries()) {
+      if (gradeSample(c, text).passed) problems.push(`${c.id} samples.fail[${index}]: expected fail`);
+    }
+    if (rejectEmptyAnswer && gradeSample(c, '').passed) problems.push(`${c.id} empty answer: expected fail`);
+  }
+  return problems;
+}

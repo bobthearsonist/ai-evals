@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'nod
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compileFeature, loadSuite } from '../local/suite.mjs';
-import { gradeSample } from '../local/contract.mjs';
+import { gradeSample, validateSamples } from '../local/contract.mjs';
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'gherkin');
 const feature = readFileSync(join(fixtureDir, 'commit.feature'), 'utf8');
@@ -69,9 +69,7 @@ test('loadSuite attaches offline-only feature samples', () => {
 });
 
 test('fixture feature sample labels agree with the shared deterministic evaluator', () => {
-  const [c] = loadSuite(fixtureDir);
-  for (const text of c.samples.pass) assert.equal(gradeSample(c, text).passed, true, text);
-  for (const text of c.samples.fail) assert.equal(gradeSample(c, text).passed, false, text);
+  assert.deepEqual(validateSamples(loadSuite(fixtureDir)), []);
 });
 
 test('controlled text, length, tables and named regex vocabulary emits neutral checks', () => {

@@ -171,6 +171,23 @@ A companion `greeting.samples.json` contains
 required and nonempty. Keep negative controls and discriminating samples;
 samples test the graders, not model quality.
 
+Consumer tests can check those labels without implementing their own grading loop:
+
+```javascript
+import assert from 'node:assert/strict';
+import { loadSuite } from '@bobthearsonist/ai-evals/suite';
+import { validateSamples } from '@bobthearsonist/ai-evals/contract';
+
+assert.deepEqual(validateSamples(loadSuite(suiteDir)), []);
+```
+
+`validateSamples` accepts loaded cases and returns diagnostics for pass samples
+that do not pass and fail samples that pass. Repositories that require every case
+to reject an empty answer can pass `{ rejectEmptyAnswer: true }` as the second
+argument; that policy is opt-in. It uses deterministic grading only, not the AI
+judge. This is separate from the CLI's `validate` command, which validates case
+and sample structure.
+
 The controlled vocabulary supports response `contains`, `does not contain`,
 `starts with` quoted text, and `contains each row:` with a headerless
 one-column table. Response or commit subject `is at most N characters` is
