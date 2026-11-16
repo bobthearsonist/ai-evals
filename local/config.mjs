@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { resolveContext } from './context.mjs';
 
 function discoverConfig(cwd) {
   let directory = resolve(cwd);
@@ -32,12 +33,16 @@ export function resolveConfig({ configPath, flags = {}, cwd = process.cwd() } = 
     skillsRoots: skillsRoots.length ? skillsRoots : [resolve(base, '..', 'skills')],
     outputDir: abs(flags.outputDir ?? cfg.outputDir ?? '.work/local-runs', flags.outputDir ? cwd : base),
     resultsDir: abs(flags.resultsDir ?? cfg.resultsDir ?? '.work/results', flags.resultsDir ? cwd : base),
-    suites: cfg.suites ?? {},
+    context: resolveContext(cfg.context, base),
+    suites: Object.fromEntries(Object.entries(cfg.suites ?? {}).map(([id, suite]) => [
+      id, { ...suite, ...(Object.hasOwn(suite, 'context') ? { context: resolveContext(suite.context, base) } : {}) },
+    ])),
   };
 }
 
 // A suite id may map to a differently named skill and cases folder; default is identity.
 export function suiteSettings(config, suite) {
   const s = config.suites[suite] ?? {};
-  return { skill: s.skill ?? suite, casesFolder: s.cases ?? suite };
+  return { skill: s.skill ?? suite, casesFolder: s.cases ?? suite,
+    context: s.context === undefined ? config.context ?? null : s.context };
 }

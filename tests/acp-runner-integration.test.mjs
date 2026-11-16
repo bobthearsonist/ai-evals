@@ -28,6 +28,11 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
     const fixturesDir = join(root, 'inputs');
     mkdirSync(fixturesDir);
     writeFileSync(join(fixturesDir, 'input.txt'), 'synthetic fixture');
+    const contextRoot = join(root, 'checkout');
+    mkdirSync(join(contextRoot, 'docs'), { recursive: true });
+    writeFileSync(join(contextRoot, 'README.md'), 'Read docs/guide.md.');
+    writeFileSync(join(contextRoot, 'docs', 'guide.md'), 'Shared repository context.');
+    writeFileSync(join(contextRoot, 'not-selected.txt'), 'Do not stage.');
     const cases = compileFeature(feature
       .replace('    When the user asks:', '    Given the suite fixtures are available\n    When the user asks:')
       .replace('Say hello.', 'Say hello. Read {{fixtures}}.'), { uri: 'transport.feature' });
@@ -48,12 +53,19 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
         workspaces.push(cwd);
         assert.equal(prompt, `Say hello. Read ${join(cwd, 'fixtures')}.`);
         assert.equal(readFileSync(join(cwd, 'fixtures', 'input.txt'), 'utf8'), 'synthetic fixture');
+        assert.equal(readFileSync(join(cwd, 'README.md'), 'utf8'), 'Read docs/guide.md.');
+        assert.equal(readFileSync(join(cwd, 'docs', 'guide.md'), 'utf8'), 'Shared repository context.');
+        assert.equal(existsSync(join(cwd, 'not-selected.txt')), false);
+        assert.equal(existsSync(join(cwd, 'canary.txt')), false);
+        writeFileSync(join(cwd, 'README.md'), 'A changed workspace must not affect the next arm.');
         assert.equal(existsSync(join(cwd, client === 'claude' ? '.claude' : '.github', 'skills', 'demo')), calls === 1);
         assert.equal(options.skillName, calls === 1 ? 'demo' : undefined);
         return { finalText: 'hello', toolCalls: [], raw: 'hello', complete: true, usage: null, errors: [] };
       },
     });
-    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, fixturesDir, cases });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, fixturesDir,
+      context: { root: contextRoot, paths: ['README.md', 'docs'] }, cases });
+    writeFileSync(join(contextRoot, 'README.md'), 'The live checkout changed after snapshotting.');
     const result = await runner.run(cases, {
       ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'with-without', model: 'fake-model',
     });

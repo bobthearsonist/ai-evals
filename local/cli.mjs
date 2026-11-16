@@ -8,6 +8,7 @@ import { registerStubs } from './stubs.mjs';
 import { recordRun } from './summary.mjs';
 import { regradeRun } from './regrade.mjs';
 import { resolveConfig, suiteSettings } from './config.mjs';
+import { validateContext } from './context.mjs';
 import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from './policy.mjs';
 import { createAcpRunner } from './acp-runner.mjs';
 import { judgeArchive } from './judge-cli.mjs';
@@ -162,10 +163,11 @@ if (command === 'regrade') {
   process.exit(0);
 }
 if (!values.suite) throw new Error('--suite is required');
-const { skill: skillName, casesFolder } = suiteSettings(config, values.suite);
+const { skill: skillName, casesFolder, context } = suiteSettings(config, values.suite);
 const suiteDir = join(config.casesDir, casesFolder);
 const cases = loadSuite(suiteDir);
 const fixturesDir = join(suiteDir, 'fixtures');
+validateContext(context);
 if (command === 'validate') {
   const result = { suite: values.suite, caseCount: cases.length, policy: policySnapshot(cases) };
   console.log(values.json ? JSON.stringify(result, null, 2) : `${values.suite}: valid (${cases.length} cases, policy ${result.policy.sha256.slice(0, 12)})`);
@@ -210,9 +212,9 @@ const outDir = join(config.outputDir, `${ts}-${command}`);
 mkdirSync(outDir, { recursive: true });
 const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null, caseIds: smoke ? selectedCaseIds : undefined });
 const prepared = runner.prepare({
-  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, cases,
+  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, context, cases,
 });
-const { skillHash, canaryToken } = prepared;
+const { skillHash, contextHash, canaryToken } = prepared;
 const singleResults = [];
 for (const id of smoke && selectedCaseIds.length > 1 ? selectedCaseIds : [caseId]) {
   singleResults.push(await runner.run(cases, { ...prepared, ...runnerOptions, outputDir: join(outDir, 'eval-output'), runs, ablation, caseId: id, concurrency: Number(values.concurrency) }));
@@ -226,7 +228,7 @@ const result = singleResults.length === 1 ? singleResults[0] : {
   status: singleResults.some((item) => !['passed', 'below_threshold'].includes(item.status)) ? 'partial'
     : singleResults.every((item) => item.status === 'passed') ? 'passed' : 'below_threshold',
 };
-const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
+const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, contextSha256: contextHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
 writeFileSync(join(outDir, 'normalized.json'), JSON.stringify(normalized, null, 2));
 if (!smoke && result.cases?.length) {
   const { diff } = recordRun(config.resultsDir, values.suite, normalized);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -21,6 +21,27 @@ test('CLI discovers the nearest evals.json without wrapper arguments', () => {
   const result = run(['validate', '--suite', 'demo'], fixtures);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^demo: valid/);
+});
+
+test('validate and both dry-run entrypoints reject missing context before execution', (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-evals-context-cli-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const cfg = join(cwd, 'evals.json');
+  writeFileSync(cfg, JSON.stringify({
+    casesDir: join(fixtures, 'cases'), skillsRoots: [join(fixtures, 'skills')],
+    context: { root: '.', paths: ['README.md'] },
+  }));
+  for (const args of [['validate', '--suite', 'demo'], ['run', '--suite', 'demo', '--dry-run'], ['run-all', '--dry-run']]) {
+    const missing = run([...args, '--config', cfg], cwd);
+    assert.equal(missing.status, 2, missing.stdout);
+    assert.match(missing.stderr, /README.md/);
+  }
+  writeFileSync(join(cwd, 'README.md'), 'Shared context.');
+  for (const args of [['validate', '--suite', 'demo'], ['run', '--suite', 'demo', '--dry-run'], ['run-all', '--dry-run']]) {
+    const valid = run([...args, '--config', cfg], cwd);
+    assert.equal(valid.status, 0, valid.stderr);
+  }
+  assert.equal(existsSync(join(cwd, '.work')), false);
 });
 
 test('CLI requires an explicit suite and keeps OpenCode stubbed', () => {

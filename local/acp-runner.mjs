@@ -145,7 +145,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
     },
     async run(suite, options) {
       const {
-        skillName, skillSnapshot, fixtureSnapshot, canaryToken, outputDir, model,
+        skillName, skillSnapshot, fixtureSnapshot, contextSnapshot, canaryToken, outputDir, model,
         runs, ablation, caseId, timeoutSeconds = 120,
       } = options;
       if (!Number.isInteger(runs) || runs < 1 || !['none', 'with-without'].includes(ablation)) throw new Error('invalid ACP schedule');
@@ -181,6 +181,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           // A real repository boundary prevents parent-directory configuration
           // discovery even when the caller's temp directory is inside a repo.
           execFileSync('git', ['init', '--quiet', workspace], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+          if (contextSnapshot) cpSync(contextSnapshot, workspace, { recursive: true });
           const skillsRoot = join(workspace, client === 'claude' ? '.claude' : '.github', 'skills');
           mkdirSync(skillsRoot, { recursive: true });
           if (arm === 'with') cpSync(skillSnapshot, join(skillsRoot, skillName), { recursive: true });

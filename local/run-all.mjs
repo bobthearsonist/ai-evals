@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { resolveConfig, suiteSettings } from './config.mjs';
+import { validateContext } from './context.mjs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { renderMarkdown } from './summary.mjs';
@@ -88,6 +89,7 @@ if (command !== 'preflight') {
   if (!suites.length) throw new Error(`no suites found: ${config.casesDir}`);
   for (const s of suites) {
     const cases = loadSuite(folder(s));
+    validateContext(suiteSettings(config, s).context);
     const caseIds = values.case ?? [];
     if (command !== 'smoke' && caseIds.length > 1) throw new Error('--case may be repeated only for smoke');
     if (new Set(caseIds).size !== caseIds.length) throw new Error('--case values must be distinct');

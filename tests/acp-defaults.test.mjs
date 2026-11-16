@@ -112,8 +112,10 @@ test('passing smoke and paired runs exit zero for single and multiple runners', 
     caseId: 'greeting', pass: ['hello world'], fail: ['goodbye'],
   }));
   const passingConfig = join(root, 'evals.json');
+  writeFileSync(join(root, 'README.md'), 'Synthetic repository context.');
   writeFileSync(passingConfig, JSON.stringify({
     casesDir: 'cases', skillsRoots: [resolve(import.meta.dirname, 'fixtures', 'skills')],
+    context: { root: '.', paths: ['README.md'] },
     suites: { passing: { skill: 'demo' } },
   }));
 
@@ -139,6 +141,11 @@ test('passing smoke and paired runs exit zero for single and multiple runners', 
       assert.equal(item.overallScore, 1);
       assert.equal(item.cases[0].invalidRuns, 0);
       assert.equal(item.error, undefined);
+      const archive = resolve(item.outputDir, '..');
+      const manifest = JSON.parse(readFileSync(join(archive, 'context.json'), 'utf8'));
+      assert.equal(item.contextSha256, manifest.sha256);
+      assert.match(item.contextSha256, /^[a-f0-9]{64}$/);
+      assert.equal(readFileSync(join(archive, 'context-source', 'README.md'), 'utf8'), 'Synthetic repository context.');
     }
   }
 });

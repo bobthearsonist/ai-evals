@@ -75,6 +75,51 @@ override config with paths relative to the working directory.
 `EVAL_SKILL_ROOT` can also override skill roots. With no `suites` mapping, suite
 ids equal their skill names and case directories.
 
+### Repository context
+
+Skills that read checkout documentation or scripts can opt into a shared context:
+
+```json
+{
+  "skillsRoots": ["../.agents/skills"],
+  "context": {
+    "root": "..",
+    "paths": ["README.md", "docs/guides", "scripts/example.mjs"]
+  },
+  "suites": {
+    "setup": { "skill": "first-run-setup" },
+    "standalone": { "context": null }
+  }
+}
+```
+
+`root` is relative to the config file. `paths` explicitly selects files or
+directories relative to that root, preserving their paths at the candidate
+workspace root. There are no globs or destination mappings. A suite's `context`
+replaces the global context; `null` disables it. Without this option, staging
+is unchanged.
+
+The engine snapshots the selected files once into `context-source/`, then copies
+the same snapshot into every fresh workspace, in **both** arms. Only the selected
+skill differs between arms. `context.json` records relative paths and file
+hashes; `normalized.json` records their combined `contextSha256`. Snapshots are
+data under the existing read-only candidate tool policy, not an OS sandbox.
+Scripts may be read, not executed.
+
+Context validation runs offline in `validate` and dry runs, and before any
+multi-suite execution. It rejects missing paths, symlinks/junctions, traversal,
+overlapping paths, and case collisions. Client configuration directories
+(`.git`, `.agents`, `.claude`, `.github`, `.copilot`, `.opencode`, `.vscode`),
+dependency/output directories (`node_modules`, `.work`), skill and instruction
+files (`SKILL.md`, `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md`,
+`copilot-instructions.md`), MCP/OpenCode configuration, and the runner's root
+`fixtures` path are reserved. These checks apply inside selected directories too.
+Keep cases, samples, secrets, and machine-local state out of the allowlist;
+the engine cannot infer sensitive content from an ordinary filename. Context
+does not install plugins or grant access to live repository services.
+
+### Running evaluations
+
 ```powershell
 npx --no-install ai-evals preflight --client claude --model MODEL_ID
 npx --no-install ai-evals smoke --config evals/evals.json --suite my-suite --model MODEL_ID --approve-sessions 1

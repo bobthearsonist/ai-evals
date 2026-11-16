@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { validateCase } from './contract.mjs';
+import { snapshotContext } from './context.mjs';
 
 export function hashTree(dir) {
   const hash = createHash('sha256');
@@ -30,7 +31,7 @@ function assertCopyableTree(dir) {
   }
 }
 
-export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDir, cases }) {
+export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDir, context, cases }) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(skillName)) throw new Error('skill name must be kebab-case');
   for (const c of cases) {
     const problems = validateCase(c);
@@ -51,6 +52,7 @@ export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDi
     cpSync(fixtures, fixtureSnapshot, { recursive: true });
   }
   const canaryToken = randomBytes(24).toString('hex');
+  const preparedContext = snapshotContext(context, outDir);
   writeFileSync(join(outDir, 'canary.txt'), canaryToken);
-  return { skillName, skillSnapshot, fixtureSnapshot, skillHash: hashTree(skillSnapshot), canaryToken };
+  return { skillName, skillSnapshot, fixtureSnapshot, skillHash: hashTree(skillSnapshot), canaryToken, ...preparedContext };
 }

@@ -25,8 +25,8 @@ test('config paths resolve relative to the config file and flags override them',
   assert.equal(c.casesDir, join(dir, 'evals', 'cases'));
   assert.deepEqual(c.skillsRoots, [join(dir, 'skills')]);
   assert.equal(c.outputDir, join(dir, 'evals', '.work', 'local-runs'));
-  assert.deepEqual(suiteSettings(c, 'a'), { skill: 'real-skill', casesFolder: 'a-cases' });
-  assert.deepEqual(suiteSettings(c, 'b'), { skill: 'b', casesFolder: 'b' });
+  assert.deepEqual(suiteSettings(c, 'a'), { skill: 'real-skill', casesFolder: 'a-cases', context: null });
+  assert.deepEqual(suiteSettings(c, 'b'), { skill: 'b', casesFolder: 'b', context: null });
   const o = resolveConfig({ configPath: p, cwd, flags: { outputDir: join(dir, 'out') } });
   assert.equal(o.outputDir, join(dir, 'out'));
   assert.throws(() => resolveConfig({ configPath: join(dir, 'missing.json'), cwd }));
@@ -56,4 +56,21 @@ test('compiled cases require schemaVersion 2 and named checks', () => {
     assert.ok(validateCase({ ...ok, schemaVersion }).length > 0);
   }
   assert.ok(validateCase({ ...ok, checks: [{ type: 'regex', pattern: 'a' }] }).length > 0);
+});
+
+test('repository context is config-relative, inherited, replaced or disabled per suite', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-context-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'evals.json');
+  writeFileSync(path, JSON.stringify({
+    context: { root: '..', paths: ['README.md'] },
+    suites: {
+      alternate: { context: { root: 'alternate', paths: ['docs\\guide.md'] } },
+      standalone: { context: null },
+    },
+  }));
+  const config = resolveConfig({ configPath: path, cwd });
+  assert.deepEqual(suiteSettings(config, 'inherited').context, { root: resolve(dir, '..'), paths: ['README.md'] });
+  assert.deepEqual(suiteSettings(config, 'alternate').context, { root: join(dir, 'alternate'), paths: ['docs/guide.md'] });
+  assert.equal(suiteSettings(config, 'standalone').context, null);
 });
