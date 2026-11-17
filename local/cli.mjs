@@ -104,8 +104,8 @@ let runner = getRunner(values.client ?? 'claude');
 if (command === 'judge') {
   if (positionals.length !== 2) throw new Error('judge requires one run directory');
   if (!values.client || !values.model) throw new Error('judge requires an explicit --client and --model');
-  if (values.exe || values.suite || values.runs || values['acp-profile']) {
-    throw new Error('judge does not support --exe, --suite, --runs or --acp-profile; it reads archived answers only');
+  if ((values.exe && values.client !== 'copilot') || values.suite || values.runs || values['acp-profile']) {
+    throw new Error('judge does not support --suite, --runs or --acp-profile; --exe is only supported for Copilot');
   }
   const runDir = resolve(positionals[1]);
   const meta = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
@@ -116,7 +116,7 @@ if (command === 'judge') {
   const result = await judgeArchive({
     runDir, parse: archivedRunner.parseTrace, requireReceipt: true,
     caseIds: values.case?.length ? values.case : undefined, rubricPath: values.rubric && resolve(values.rubric),
-    model: values.model, client: values.client, approveSessions: Number(values['approve-sessions'] ?? 0), timeoutMs, dryRun: values['dry-run'],
+    model: values.model, client: values.client, exe: values.exe, approveSessions: Number(values['approve-sessions'] ?? 0), timeoutMs, dryRun: values['dry-run'],
   });
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.dryRun ? 0 : result.scoring

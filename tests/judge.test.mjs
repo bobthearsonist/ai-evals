@@ -91,6 +91,24 @@ test('normalizes wrapped evidence before exact-match verification', async () => 
   }
 });
 
+test('Copilot judge orchestration carries the pinned executable through batch execution', async () => {
+  const execution = await executeFor('pass.json');
+  const exe = join(fixtureDir, 'copilot.exe');
+  const result = await judgeArchivedRun({
+    answers: [sampleAnswer], rubric, client: 'copilot', model: 'test-model',
+    approveSessions: 1, exe,
+    execute: async (options) => {
+      const launch = buildAcpLaunch(options);
+      assert.equal(launch.command, exe);
+      assert.equal(launch.mode, 'judge');
+      assert.equal(launch.judgeIsolation.tools, false);
+      assert.equal(launch.args.includes('--allow-tool'), false);
+      return execution;
+    },
+  });
+  assert.equal(result.assessments[0].status, 'judged');
+});
+
 test('accepts a valid fail with exact evidence', async () => {
   const execution = await executeFor('fail.json');
   const answer = { ...sampleAnswer, text: 'fix: repair the broken cache' };

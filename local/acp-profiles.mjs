@@ -67,7 +67,7 @@ function mergeJudgeMeta(sessionMeta, model) {
 }
 
 function capabilitiesFor(client, profile) {
-  if (profile === 'ai-evals-judge' && client === 'claude') {
+  if (profile === 'ai-evals-judge' && ['claude', 'copilot'].includes(client)) {
     return {
       toolFree: true,
       skillsFree: true,
@@ -138,10 +138,11 @@ export function validateAcpProfile({
     if (skillName !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(skillName)) errors.push('skillName must be kebab-case');
   }
   if (selectedProfile === 'ai-evals-judge') {
-    if (client !== 'claude') errors.push('ai-evals-judge is available only for the Claude ACP adapter');
+    if (!['claude', 'copilot'].includes(client)) errors.push('ai-evals-judge requires the Claude or Copilot ACP runtime');
     if (mode !== 'judge') errors.push('ai-evals-judge requires mode: judge');
     if (!model) errors.push('ai-evals-judge requires an explicit model');
-    if (command || args || env) errors.push('ai-evals-judge does not allow command, args or env overrides');
+    if ((command && client !== 'copilot') || args || env) errors.push('ai-evals-judge does not allow args or env overrides; only Copilot accepts a native executable');
+    if (client === 'copilot' && sessionMeta) errors.push('Copilot ai-evals-judge does not allow session metadata overrides');
     if (mcpServers?.length) errors.push('ai-evals-judge does not allow ACP MCP servers');
   } else if (selectedProfile === 'custom' && (!command || !Array.isArray(args))) {
     errors.push('custom ACP profile requires command and args');
@@ -163,17 +164,20 @@ export function validateAcpProfile({
   let launchMeta = sessionMeta ?? {};
   if (!errors.length) {
     try {
-      if (selectedProfile === 'ai-evals-judge') {
+      if (selectedProfile === 'ai-evals-judge' && client === 'claude') {
         launchCommand = process.execPath;
         launchArgs = [fileURLToPath(new URL('./claude-acp.mjs', import.meta.url))];
         launchMeta = mergeJudgeMeta(sessionMeta, model);
-      } else if (selectedProfile === 'copilot') {
+      } else if (client === 'copilot' && ['copilot', 'ai-evals-judge'].includes(selectedProfile)) {
         launchCommand ??= 'copilot';
         launchArgs = [
           '--acp', '--stdio', '--no-auto-update', '--no-custom-instructions',
           '--disable-builtin-mcps', '--no-ask-user', '--no-bash-env',
-          '--available-tools', 'view', 'glob', 'grep', 'skill',
-          '--allow-tool', 'view', '--allow-tool', 'glob', '--allow-tool', 'grep', '--allow-tool', 'skill',
+          '--available-tools',
+          ...(mode === 'judge' ? [] : [
+            'view', 'glob', 'grep', 'skill',
+            '--allow-tool', 'view', '--allow-tool', 'glob', '--allow-tool', 'grep', '--allow-tool', 'skill',
+          ]),
           '--add-dir', cwd,
         ];
         if (model) launchArgs.push('--model', model);
@@ -221,7 +225,7 @@ export function validateAcpProfile({
       ? { isolatedClient: client, expectedAgentVersion: client === 'claude' ? '0.94.0' : '1.0.102' }
       : {}),
     capabilities,
-    ...(selectedProfile === 'ai-evals-judge' && client === 'claude' && mode === 'judge' && !errors.length
+    ...(selectedProfile === 'ai-evals-judge' && ['claude', 'copilot'].includes(client) && mode === 'judge' && !errors.length
       ? { judgeIsolation: { ...JUDGE_ISOLATION } }
       : {}),
     modelAtLaunch: ['copilot', 'opencode', 'claude', 'ai-evals-judge'].includes(selectedProfile),

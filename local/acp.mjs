@@ -1,8 +1,11 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { client as createClient, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import { buildAcpLaunch, isBuiltAcpLaunch, validateAcpProfile } from './acp-profiles.mjs';
-import { prepareAcpEnvironment } from './acp-isolation.mjs';
+import { cleanupAcpDirectory, prepareAcpEnvironment } from './acp-isolation.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -58,6 +61,23 @@ function updateToolCalls(toolCalls, update) {
   const existing = toolCalls.get(id) ?? { id };
   Object.assign(existing, update);
   toolCalls.set(id, existing);
+}
+
+export function acpAnswerText(events, fallback) {
+  const copilot = events.some((event) => event.method === 'initialize'
+    && event.result?.agentInfo?.name === 'Copilot'
+    && event.result.agentInfo.version === '1.0.102');
+  const chunks = events.filter((event) => event.method === 'session/update'
+    && event.params?.update?.sessionUpdate === 'agent_message_chunk'
+    && event.params.update.content?.type === 'text')
+    .map((event) => event.params.update.content.text);
+  // This pinned runtime emits its tool-filter notice as a standalone first
+  // message chunk, without a newline. Preserve it in raw evidence, not answers.
+  if (copilot && chunks.length > 1
+    && /^Info: Disabled tools: [a-z_]+(?:, [a-z_]+)*$/.test(chunks[0])) {
+    return chunks.slice(1).join('');
+  }
+  return fallback;
 }
 
 function toResult({ text, toolCalls, raw, complete, usage, model, stopReason, errors }) {
@@ -128,11 +148,23 @@ export {
 
 export async function executeAcp(options) {
   assertExecutionOptions(options);
-  const isolated = options.isolatedClient ? prepareAcpEnvironment(options.isolatedClient) : null;
+  let workspace;
+  let isolated;
   try {
+    if (options.mode === 'judge' && options.isolatedClient === 'copilot') {
+      workspace = mkdtempSync(join(tmpdir(), 'ai-evals-acp-judge-'));
+      execFileSync('git', ['init', '--quiet', workspace], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      options = buildAcpLaunch({
+        client: 'copilot', mode: 'judge', profile: 'ai-evals-judge',
+        command: options.command, cwd: workspace, model: options.model,
+        prompt: options.prompt, timeoutMs: options.timeoutMs,
+      });
+    }
+    isolated = options.isolatedClient ? prepareAcpEnvironment(options.isolatedClient) : null;
     return await executeConfiguredAcp(options, isolated?.env ?? { ...process.env, ...(options.env ?? {}) });
   } finally {
     isolated?.cleanup();
+    if (workspace) cleanupAcpDirectory(workspace);
   }
 }
 
@@ -338,7 +370,7 @@ async function executeConfiguredAcp(options, environment) {
   }
 
   return toResult({
-    text: text.join(''), toolCalls, raw, complete: complete && errors.length === 0, usage, model, stopReason,
+    text: acpAnswerText(raw, text.join('')), toolCalls, raw, complete: complete && errors.length === 0, usage, model, stopReason,
     errors: contextualizeExecutionErrors(options, errors),
   });
 }

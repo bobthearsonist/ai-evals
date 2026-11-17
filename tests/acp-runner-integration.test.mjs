@@ -19,6 +19,31 @@ const feature = `Feature: Shared transport
     Then the response contains "hello"
 `;
 
+test('archived Copilot answers exclude transport notices without hiding genuine advice', () => {
+  const notice = 'Info: Disabled tools: create, powershell, sql';
+  const c = compileFeature(`${feature}    And the response does not contain "sql"\n`)[0];
+  const chunk = (text) => ({ method: 'session/update', params: {
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  } });
+  for (const [answer, expected] of [['hello', true], ['hello; change sql settings', false]]) {
+    const raw = [
+      { method: 'initialize', result: { agentInfo: { name: 'Copilot', version: '1.0.102' } } },
+      chunk(notice), chunk(answer),
+    ];
+    for (const evidence of [raw, JSON.stringify(raw)]) {
+      const archived = JSON.stringify({
+        type: 'ai-evals.acp', schemaVersion: 1,
+        transcript: { finalText: notice + answer, toolCalls: [], raw: evidence, complete: true, errors: [] },
+      });
+      const transcript = parseAcpTrace(archived);
+      assert.equal(transcript.finalText, answer);
+      assert.ok(transcript.raw.includes(notice));
+      const grade = gradeTranscript(c, transcript, { arm: 'with' });
+      assert.equal(grade.checks[1].passed, expected);
+    }
+  }
+});
+
 for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherkin skills and readable fixtures with identical replay policy`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'acp-runner-'));
   try {
@@ -84,6 +109,34 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
     assert.equal(replay[0].withoutScore, result.cases[0].withoutScore);
     const receipt = JSON.parse(readFileSync(join(root, 'traces', 'greeting', 'with-1.jsonl.receipt.json')));
     assert.equal(receipt.usage, null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('cleanup warnings preserve completed receipts and do not abort remaining sessions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-cleanup-'));
+  try {
+    const source = join(root, 'skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\nGreet.\n');
+    const cases = compileFeature(feature, { uri: 'transport.feature' });
+    const runner = createAcpRunner({
+      client: 'copilot', launch: () => ({}),
+      execute: async () => ({ finalText: 'hello world', toolCalls: [], raw: [], complete: true, errors: [] }),
+      cleanup: (workspace) => {
+        rmSync(workspace, { recursive: true, force: true });
+        return 'synthetic EBUSY cleanup warning';
+      },
+    });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases });
+    const result = await runner.run(cases, {
+      ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'with-without', model: 'fake-model',
+    });
+    assert.equal(result.sessions, 2);
+    for (const arm of ['with', 'without']) {
+      const receipt = JSON.parse(readFileSync(join(root, 'traces', 'greeting', `${arm}-1.jsonl.receipt.json`), 'utf8'));
+      assert.equal(receipt.valid, true);
+      assert.match(receipt.cleanupWarning, /EBUSY/);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

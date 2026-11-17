@@ -1,10 +1,10 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { executeAcp } from './acp.mjs';
+import { acpAnswerText, executeAcp } from './acp.mjs';
 import { buildAcpLaunch } from './acp-profiles.mjs';
-import { checkAcpRuntime } from './acp-isolation.mjs';
+import { checkAcpRuntime, cleanupAcpDirectory } from './acp-isolation.mjs';
 import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities, validateCase } from './contract.mjs';
 import { plannedSessions, prepareWorkspace } from './workspace.mjs';
 import { gradeTranscript, verdict } from './grade.mjs';
@@ -78,6 +78,7 @@ function sumReportedUsdCosts(receipts) {
 function gradingTranscript(transcript) {
   return {
     ...transcript,
+    finalText: acpAnswerText(protocolEvents(transcript.raw), transcript.finalText),
     transport: 'acp',
     toolCalls: toolCallsWithRawEvidence(transcript).map((call) => {
       // Copilot omits native tool names; identify Skill only by its exact
@@ -104,7 +105,7 @@ export function parseAcpTrace(text) {
 }
 
 // A custom profile is explicit operator configuration, never verified native isolation.
-export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaunch, execute = executeAcp } = {}) {
+export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaunch, execute = executeAcp, cleanup = cleanupAcpDirectory } = {}) {
   if (!['claude', 'copilot', 'opencode'].includes(client)) throw new Error('unsupported ACP client');
   if (acpProfile !== undefined) {
     if (!acpProfile || typeof acpProfile !== 'object' || Array.isArray(acpProfile)
@@ -216,9 +217,10 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
             type: 'ai-evals.acp', schemaVersion: 1,
             transcript: { finalText: '', toolCalls: [], raw: '', complete: false, errors: [receipt.error] },
           }) + '\n', { flag: 'wx' });
+          const cleanupWarning = cleanup(workspace);
+          if (cleanupWarning) receipt.cleanupWarning = cleanupWarning;
           writeFileSync(`${path}.receipt.json`, JSON.stringify(receipt, null, 2), { flag: 'wx' });
           receipts.push(receipt);
-          rmSync(workspace, { recursive: true, force: true });
         }
         if (stopReason) break jobs;
       }

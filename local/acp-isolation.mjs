@@ -18,6 +18,17 @@ const SYSTEM_ENVIRONMENT = new Set([
   'processor_architecture', 'number_of_processors',
 ]);
 
+export function cleanupAcpDirectory(path, { remove = rmSync, warn = console.warn } = {}) {
+  try {
+    remove(path, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+    return null;
+  } catch (error) {
+    const warning = `ACP temporary directory cleanup failed: ${path} (${error.code ?? error.message})`;
+    warn(warning);
+    return warning;
+  }
+}
+
 export function resolveAcpCredentials(client, {
   env = process.env,
   home = homedir(),
@@ -88,23 +99,23 @@ export function prepareAcpEnvironment(client, { env = process.env, credentials =
         COPILOT_AUTO_UPDATE: 'false',
         ...credentials,
       },
-      cleanup() { rmSync(home, { recursive: true, force: true }); },
+      cleanup() { return cleanupAcpDirectory(home); },
     };
   } catch (error) {
-    rmSync(home, { recursive: true, force: true });
+    cleanupAcpDirectory(home);
     throw error;
   }
 }
 
-export function checkAcpRuntime(launch) {
+export function checkAcpRuntime(launch, { exec = execFileSync, credentials = resolveAcpCredentials } = {}) {
   if (!launch.isolatedClient) return { authentication: 'not checked; explicit custom profile' };
   if (launch.isolatedClient === 'copilot') {
     const isolated = prepareAcpEnvironment('copilot', { credentials: {} });
     try {
       let version;
       try {
-        version = execFileSync(launch.command, ['--version', '--no-auto-update'], {
-          env: isolated.env, encoding: 'utf8', timeout: 10_000,
+        version = exec(launch.command, ['--version', '--no-auto-update'], {
+          env: isolated.env, encoding: 'utf8', timeout: 60_000,
           stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
       } catch (error) {
@@ -120,7 +131,7 @@ export function checkAcpRuntime(launch) {
   } else {
     const isolated = prepareAcpEnvironment('claude', { credentials: {} });
     try {
-      const version = execFileSync(launch.command, [...launch.args, '--version'], {
+      const version = exec(launch.command, [...launch.args, '--version'], {
         env: isolated.env, encoding: 'utf8', timeout: 15_000,
         stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
       });
@@ -132,6 +143,6 @@ export function checkAcpRuntime(launch) {
       );
     } finally { isolated.cleanup(); }
   }
-  resolveAcpCredentials(launch.isolatedClient);
+  credentials(launch.isolatedClient);
   return { authentication: 'existing credential available; provider access not checked; no model call made' };
 }

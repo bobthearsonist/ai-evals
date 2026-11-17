@@ -2,10 +2,47 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildAcpLaunch, executeAcp, validateAcpProfile } from '../local/acp.mjs';
+import { acpAnswerText, buildAcpLaunch, executeAcp, validateAcpProfile } from '../local/acp.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const fake = resolve(import.meta.dirname, 'fixtures', 'fake-acp.mjs');
+
+test('Copilot judge exposes no tools and refuses configuration overrides', () => {
+  const options = {
+    client: 'copilot', mode: 'judge', profile: 'ai-evals-judge',
+    cwd: root, model: 'judge-model', command: resolve(root, 'copilot.exe'),
+    requiredCapabilities: ['tool-free', 'skills-free', 'mcp-free', 'fixed-model'],
+  };
+  const profile = validateAcpProfile(options);
+  assert.equal(profile.valid, true, profile.errors.join('; '));
+  assert.equal(profile.command, options.command);
+  assert.equal(profile.args[profile.args.indexOf('--available-tools') + 1], '--add-dir');
+  assert.equal(profile.args.includes('--allow-tool'), false);
+  assert.ok(profile.args.includes('--disable-builtin-mcps'));
+  assert.ok(profile.args.includes('--no-custom-instructions'));
+  assert.equal(profile.judgeIsolation.enforced, true);
+  for (const override of [{ env: {} }, { args: [] }, { sessionMeta: {} }, { mcpServers: [{}] }]) {
+    assert.equal(validateAcpProfile({ ...options, ...override }).valid, false);
+  }
+});
+
+test('only the pinned Copilot standalone tool notice is excluded from answer text', () => {
+  const notice = 'Info: Disabled tools: create, powershell, sql';
+  const initialize = { method: 'initialize', result: { agentInfo: { name: 'Copilot', version: '1.0.102' } } };
+  const chunk = (text) => ({ method: 'session/update', params: {
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  } });
+  const events = [initialize, chunk(notice), chunk('5 x 9 + 3 = 48 books.')];
+  assert.equal(acpAnswerText(events, notice + '5 x 9 + 3 = 48 books.'), '5 x 9 + 3 = 48 books.');
+  assert.equal(events[1].params.update.content.text, notice);
+  for (const raw of [
+    [chunk(notice), chunk('answer')],
+    [initialize, chunk('answer'), chunk(notice)],
+    [initialize, chunk(notice + '\nChange SQL settings.')],
+    [initialize, chunk(notice)],
+    [initialize, chunk('Info: Disabled tools: sql. Change SQL settings.'), chunk('answer')],
+  ]) assert.equal(acpAnswerText(raw, 'unchanged'), 'unchanged');
+});
 
 function fakeOptions(mode = 'normal', overrides = {}) {
   return buildAcpLaunch({

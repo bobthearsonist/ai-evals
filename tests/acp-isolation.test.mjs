@@ -2,7 +2,38 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertNoManagedClaudeSettings, prepareAcpEnvironment, resolveAcpCredentials } from '../local/acp-isolation.mjs';
+import { assertNoManagedClaudeSettings, checkAcpRuntime, cleanupAcpDirectory, prepareAcpEnvironment, resolveAcpCredentials } from '../local/acp-isolation.mjs';
+
+test('temporary cleanup retries Windows locks and reports exhaustion without throwing', () => {
+  const warnings = [];
+  const path = join('temporary', 'owned-directory');
+  const warning = cleanupAcpDirectory(path, {
+    remove: (actual, options) => {
+      assert.equal(actual, path);
+      assert.ok(options.maxRetries > 0);
+      assert.ok(options.retryDelay > 0);
+      throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    },
+    warn: (message) => warnings.push(message),
+  });
+  assert.match(warning, /EBUSY/);
+  assert.deepEqual(warnings, [warning]);
+  assert.equal(cleanupAcpDirectory(path, { remove: () => {}, warn: () => assert.fail('unexpected warning') }), null);
+});
+
+test('Copilot preflight allows cold extraction without accepting a different runtime', () => {
+  const launch = { isolatedClient: 'copilot', command: 'copilot.exe', expectedAgentVersion: '1.0.102' };
+  const exec = (_command, _args, options) => {
+    assert.ok(options.timeout >= 60_000);
+    assert.equal(options.env.COPILOT_GITHUB_TOKEN, undefined);
+    return '1.0.102';
+  };
+  assert.match(checkAcpRuntime(launch, { exec, credentials: () => ({}) }).authentication, /no model call/);
+  assert.throws(() => checkAcpRuntime(launch, {
+    exec: () => '1.0.112',
+    credentials: () => assert.fail('must reject before credential lookup'),
+  }), /must be CLI version 1.0.102/);
+});
 
 test('managed Claude settings fail closed without exposing their values', () => {
   assert.doesNotThrow(() => assertNoManagedClaudeSettings({ effective: {} }));

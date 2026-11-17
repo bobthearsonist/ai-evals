@@ -49,7 +49,7 @@ export function archivedJudgeAnswers({ runDir, parse, requireReceipt = true, cas
   return answers;
 }
 
-export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rubricPath, model, client, approveSessions, timeoutMs, execute, dryRun = false }) {
+export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rubricPath, model, client, approveSessions, timeoutMs, execute, exe, dryRun = false }) {
   const rubric = rubricPath ? loadRubric(rubricPath) : undefined;
   const cases = rubricPath ? undefined : replayPolicy(runDir).cases;
   if (caseIds && typeof rubric === 'object' && caseIds.some((id) => !Object.hasOwn(rubric, id))) {
@@ -67,7 +67,7 @@ export async function judgeArchive({ runDir, parse, requireReceipt, caseIds, rub
     return { dryRun: true, client, model, plannedSessions, skipped };
   }
   const result = await judgeArchivedRun({
-    answers, rubric, cases, model, client, approveSessions, timeoutMs,
+    answers, rubric, cases, model, client, approveSessions, timeoutMs, exe,
     archiveDir: runDir, caseIds, ...(execute ? { execute } : {}),
   });
   if (cases) {

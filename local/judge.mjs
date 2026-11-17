@@ -255,7 +255,7 @@ function hasVerifiedJudgeIsolation(launch) {
     && isolation?.mcp === false;
 }
 
-async function executeWithAcp({ client, model, cwd, prompt, timeoutMs }) {
+async function executeWithAcp({ client, model, cwd, prompt, timeoutMs, exe }) {
   let acp;
   try {
     acp = await import('./acp.mjs');
@@ -274,6 +274,7 @@ async function executeWithAcp({ client, model, cwd, prompt, timeoutMs }) {
     timeoutMs,
     profile: JUDGE_PROFILE.id,
     requiredCapabilities: ['tool-free', 'skills-free', 'mcp-free', 'fixed-model'],
+    ...(exe ? { command: exe } : {}),
   });
   if (!hasVerifiedJudgeIsolation(options)) {
     throw new Error('ACP runtime cannot verify a tool-, skill-, and MCP-free judge profile');
@@ -345,7 +346,7 @@ function makeAssessment({ answer, policy, model, client, timeoutMs, execution, c
 }
 
 export async function judgeAnswer({
-  answer, rubric, policy, model, client, approveSessions, execute,
+  answer, rubric, policy, model, client, approveSessions, execute, exe,
   cwd = process.cwd(), timeoutMs = 120_000, archiveDir,
 } = {}) {
   const candidate = candidateDetails(answer);
@@ -365,8 +366,9 @@ export async function judgeAnswer({
         client, mode: 'judge', model, cwd, prompt, timeoutMs,
         profile: JUDGE_PROFILE.id,
         requiredCapabilities: ['tool-free', 'skills-free', 'mcp-free', 'fixed-model'],
+        ...(exe ? { command: exe } : {}),
       })
-      : await executeWithAcp({ client, model, cwd, prompt, timeoutMs });
+      : await executeWithAcp({ client, model, cwd, prompt, timeoutMs, exe });
     checked = validateExecution(execution, candidate.text, model, context);
   } catch (error) {
     checked = {
@@ -390,7 +392,7 @@ export async function judgeAnswer({
 }
 
 export async function judgeArchivedRun({
-  answers, rubric, cases, model, client, approveSessions, execute,
+  answers, rubric, cases, model, client, approveSessions, execute, exe,
   cwd = process.cwd(), timeoutMs = 120_000, archiveDir, caseIds,
 } = {}) {
   const plan = planJudgeRequests({ answers, rubric, cases, caseIds });
@@ -405,6 +407,7 @@ export async function judgeArchivedRun({
       client,
       approveSessions: 1,
       execute,
+      exe,
       cwd,
       timeoutMs,
       archiveDir,

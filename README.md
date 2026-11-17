@@ -374,6 +374,11 @@ hard spend cap; spend-cap flags are rejected for this transport.
 Native launch profiles must verify the required isolation controls before
 inference. Unsupported controls cause refusal, not a less-isolated fallback.
 Offline fake-server success is not native-runtime acceptance.
+Copilot preflight allows 60 seconds for a cold native-package extraction.
+Temporary-directory cleanup retries Windows file locks; exhausted cleanup is
+reported without discarding a completed answer or aborting the remaining jobs.
+The pinned Copilot runtime's standalone tool-filter notice remains in raw
+protocol evidence but is excluded from candidate and judge answer text.
 The built-in **candidate** profiles use Copilot CLI **1.0.102** or the package's
 pinned Claude ACP adapter **0.94.0** / Claude Agent SDK **0.3.303**. Copilot
 disables custom instructions and built-in MCPs and exposes only
@@ -385,6 +390,14 @@ drop ambient provider/configuration environment variables and pass existing
 credentials only in the child environment. No credential file is copied.
 Claude refuses active machine-managed settings rather than bypassing policy.
 OpenCode remains unsupported by standard entrypoints.
+
+The tool-free `ai-evals-judge` profile supports both Claude and Copilot.
+Copilot judges run with an empty tool allowlist in a fresh temporary Git
+workspace and home, with custom instructions and built-in MCPs disabled.
+Observed judge tool calls invalidate the assessment. Use `judge RUN_DIR
+--client copilot --model MODEL_ID --exe PATH --approve-sessions N` to select
+the pinned native executable; the library accepts the same optional `exe`.
+An executable override does not relax version, model, or isolation checks.
 
 Claude uses an existing `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or
 unexpired local Claude OAuth credential; Copilot uses an existing
@@ -479,13 +492,12 @@ history. These assessments remain separate from deterministic history. A bounded
 2026-10-23: one Claude `haiku` candidate and one judge session for each of nine
 mapped rubrics; all nine produced valid, exact-evidence assessments (eight
 `pass`, one `fail`). This verifies the exercised archive-to-judge execution
-path only, not judge agreement acceptance or cross-provider quality. The
-built-in judge profile is Claude-only and source-verified for its pinned
-adapter, not independently live-audited. Other native judge runtimes remain
-unsupported.
-It uses the same package-pinned adapter and sterile home as candidate sessions,
-with no tools or skills and no project settings. It requires adapter version
-`0.94.0` and confirmation of the requested model before the prompt is sent.
+path only, not judge agreement acceptance or cross-provider quality.
+Built-in judge profiles support Claude and Copilot using their pinned runtimes
+and sterile homes, with tools, skills, MCP and project settings disabled.
+Claude requires adapter version `0.94.0`; Copilot requires CLI version `1.0.102`.
+Both require confirmation of the requested model before the prompt is sent.
+Profile support alone is not evidence of live judge accuracy or agreement.
 Missing executables, version mismatches and unconfirmed models fail closed.
 
 ### Semantic scoring
