@@ -30,7 +30,7 @@ function assertCopyableTree(dir) {
   }
 }
 
-export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDir, cases }) {
+export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDir, instructionFile, cases }) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(skillName)) throw new Error('skill name must be kebab-case');
   for (const c of cases) {
     const problems = validateCase(c);
@@ -50,7 +50,17 @@ export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDi
     fixtureSnapshot = join(outDir, 'fixture-source');
     cpSync(fixtures, fixtureSnapshot, { recursive: true });
   }
+  let instructionSnapshot = null;
+  let instructionHash = null;
+  if (instructionFile) {
+    const stat = lstatSync(instructionFile);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('instruction file must be a regular file, not a symlink');
+    const content = readFileSync(instructionFile);
+    instructionSnapshot = join(outDir, 'instruction-source.md');
+    writeFileSync(instructionSnapshot, content, { flag: 'wx' });
+    instructionHash = createHash('sha256').update(content).digest('hex');
+  }
   const canaryToken = randomBytes(24).toString('hex');
   writeFileSync(join(outDir, 'canary.txt'), canaryToken);
-  return { skillName, skillSnapshot, fixtureSnapshot, skillHash: hashTree(skillSnapshot), canaryToken };
+  return { skillName, skillSnapshot, fixtureSnapshot, skillHash: hashTree(skillSnapshot), instructionSnapshot, instructionHash, canaryToken };
 }

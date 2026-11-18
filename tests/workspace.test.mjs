@@ -6,6 +6,10 @@ import { join } from 'node:path';
 import { gradeSample, registerRunner, validateCase } from '../local/contract.mjs';
 import { loadSuite } from '../local/suite.mjs';
 import { hashTree, plannedSessions, prepareWorkspace } from '../local/workspace.mjs';
+import { removeTemporaryDirectory } from '../local/cleanup.mjs';
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 
 const suiteDir = join(import.meta.dirname, 'fixtures', 'cases', 'demo');
 
@@ -62,6 +66,67 @@ test('workspace snapshots preserve source bytes and hash and keep the canary out
     cases: options.cases.map((c) => ({ ...c, fixtures: false })) });
   assert.equal(noFixtures.fixtureSnapshot, null);
 });
+
+test('explicit instructions are snapshotted and hashed, and symlinks are refused', (t) => {
+  const { root, options } = setup(t);
+  const instructionFile = join(root, 'instructions.md');
+  writeFileSync(instructionFile, 'guidance\n');
+  const prepared = prepareWorkspace({ ...options, instructionFile });
+  assert.equal(readFileSync(prepared.instructionSnapshot, 'utf8'), 'guidance\n');
+  assert.equal(prepared.instructionHash, createHash('sha256').update('guidance\n').digest('hex'));
+  const link = join(root, 'linked.md');
+  if (process.platform !== 'win32') {
+    symlinkSync(instructionFile, link);
+    assert.throws(() => prepareWorkspace({ ...options, outDir: join(root, 'linked-output'), instructionFile: link }), /regular file/);
+  }
+});
+
+test('temporary directory removal retries transient errors with bounded backoff', () => {
+  const calls = [];
+  const sleeps = [];
+  removeTemporaryDirectory('temporary-path', {
+    remove(path, options) {
+      calls.push({ path, options });
+      if (calls.length < 3) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    },
+    sleep: (ms) => sleeps.push(ms),
+  });
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0], { path: 'temporary-path', options: { recursive: true, force: true } });
+  assert.deepEqual(sleeps, [200, 400]);
+});
+
+test('temporary directory removal stops on non-retryable or exhausted errors', () => {
+  for (const [code, expectedAttempts] of [['EACCES', 1], ['EBUSY', 9]]) {
+    let attempts = 0;
+    const sleeps = [];
+    const error = Object.assign(new Error(code), { code });
+    assert.throws(() => removeTemporaryDirectory('temporary-path', {
+      remove() { attempts++; throw error; },
+      sleep: (ms) => sleeps.push(ms),
+    }), (caught) => caught === error);
+    assert.equal(attempts, expectedAttempts);
+    assert.equal(sleeps.length, expectedAttempts - 1);
+  }
+});
+
+test('temporary directory removal waits for a Windows process to release its working directory',
+  { skip: process.platform !== 'win32' }, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'acp-cleanup-'));
+    const child = spawn(process.execPath, ['-e',
+      "process.stdout.write('ready'); setTimeout(() => process.exit(0), 1000);",
+    ], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const closed = once(child, 'close');
+    t.after(async () => {
+      if (child.exitCode === null) child.kill();
+      await closed;
+      rmSync(root, { recursive: true, force: true });
+    });
+    await once(child.stdout, 'data');
+    assert.throws(() => rmSync(root, { recursive: true, force: true }), { code: 'EBUSY' });
+    removeTemporaryDirectory(root);
+    assert.equal(existsSync(root), false);
+  });
 
 test('workspace rejects invalid cases, missing fixtures and unsupported filesystem checks', (t) => {
   const { options } = setup(t);

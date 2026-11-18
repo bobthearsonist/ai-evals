@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -8,6 +8,7 @@ import { checkAcpRuntime } from './acp-isolation.mjs';
 import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities, validateCase } from './contract.mjs';
 import { plannedSessions, prepareWorkspace } from './workspace.mjs';
 import { gradeTranscript, verdict } from './grade.mjs';
+import { removeTemporaryDirectory } from './cleanup.mjs';
 
 const mean = (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 
@@ -104,7 +105,7 @@ export function parseAcpTrace(text) {
 }
 
 // A custom profile is explicit operator configuration, never verified native isolation.
-export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaunch, execute = executeAcp } = {}) {
+export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaunch, execute = executeAcp, cleanup = removeTemporaryDirectory } = {}) {
   if (!['claude', 'copilot', 'opencode'].includes(client)) throw new Error('unsupported ACP client');
   if (acpProfile !== undefined) {
     if (!acpProfile || typeof acpProfile !== 'object' || Array.isArray(acpProfile)
@@ -145,7 +146,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
     },
     async run(suite, options) {
       const {
-        skillName, skillSnapshot, fixtureSnapshot, canaryToken, outputDir, model,
+        skillName, skillSnapshot, fixtureSnapshot, instructionSnapshot, canaryToken, outputDir, model,
         runs, ablation, caseId, timeoutSeconds = 120,
       } = options;
       if (!Number.isInteger(runs) || runs < 1 || !['none', 'with-without'].includes(ablation)) throw new Error('invalid ACP schedule');
@@ -176,11 +177,12 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
         const dir = join(dirname(outputDir), 'traces', c.id);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, `${arm}-${repeat}.jsonl`);
-        const receipt = { caseId: c.id, arm, repeat, started: false, valid: false, exitCode: null, error: null };
+        const receipt = { caseId: c.id, arm, repeat, started: false, valid: false, exitCode: null, error: null, canaryTouched: null };
         try {
           // A real repository boundary prevents parent-directory configuration
           // discovery even when the caller's temp directory is inside a repo.
           execFileSync('git', ['init', '--quiet', workspace], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+          if (instructionSnapshot) cpSync(instructionSnapshot, join(workspace, client === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'));
           const skillsRoot = join(workspace, client === 'claude' ? '.claude' : '.github', 'skills');
           mkdirSync(skillsRoot, { recursive: true });
           if (arm === 'with') cpSync(skillSnapshot, join(skillsRoot, skillName), { recursive: true });
@@ -188,6 +190,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           if (c.fixtures) cpSync(fixtureSnapshot, fixtures, { recursive: true });
           const launchOptions = build({
             client, mode: 'candidate', model, cwd: workspace, timeoutMs: timeoutSeconds * 1000,
+            projectInstructions: Boolean(instructionSnapshot),
             ...(arm === 'with' ? { skillName } : {}),
             prompt: c.fixtures ? c.prompt.replaceAll('{{fixtures}}', fixtures) : c.prompt,
             ...(exe ? { command: exe } : {}),
@@ -207,39 +210,58 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
             receipt.grade.errors?.map((error) => error.diagnostic).join('; ') || 'required grading evidence unavailable',
           );
           receipt.valid = true;
+          if (captured.cleanupError) {
+            receipt.cleanupError = `isolated-home cleanup failed: ${captured.cleanupError}`;
+            stopReason = receipt.cleanupError;
+          }
         } catch (error) {
           receipt.error = error.message;
           stopReason = error.message;
         } finally {
+          try { cleanup(workspace); } catch (error) {
+            receipt.cleanupError = error.message;
+            stopReason = `workspace cleanup failed: ${error.message}`;
+          }
           if (!existsSync(path)) writeFileSync(path, JSON.stringify({
             type: 'ai-evals.acp', schemaVersion: 1,
             transcript: { finalText: '', toolCalls: [], raw: '', complete: false, errors: [receipt.error] },
           }) + '\n', { flag: 'wx' });
           writeFileSync(`${path}.receipt.json`, JSON.stringify(receipt, null, 2), { flag: 'wx' });
           receipts.push(receipt);
-          rmSync(workspace, { recursive: true, force: true });
         }
         if (stopReason) break jobs;
       }
       const cases = selected.map((c) => {
         const records = receipts.filter((r) => r.caseId === c.id);
+        const expected = runs * (ablation === 'with-without' ? 2 : 1);
+        const invalid = records.filter((r) => !r.valid);
         const scores = (arm) => records.filter((r) => r.valid && r.arm === arm).map((r) => r.grade.score);
         const withRuns = scores('with');
         const withoutRuns = scores('without');
+        const partial = records.length !== expected || invalid.length > 0;
+        const partialReason = records.length !== expected
+          ? stopReason ?? `Expected ${expected} trace(s), found ${records.length}.`
+          : invalid.length ? invalid.map((record) => record.error ?? 'invalid run').join('; ') : null;
         return {
           id: c.id, withRuns, withoutRuns, withScore: mean(withRuns), withoutScore: mean(withoutRuns),
           delta: mean(withRuns) != null && mean(withoutRuns) != null ? mean(withRuns) - mean(withoutRuns) : null,
           verdict: verdict(withRuns, withoutRuns), invalidRuns: records.filter((r) => !r.valid).length,
-          partial: records.length !== runs * (ablation === 'with-without' ? 2 : 1) || records.some((r) => !r.valid),
-          partialReason: stopReason, costUsd: sumReportedUsdCosts(records),
+          partial, partialReason, costUsd: sumReportedUsdCosts(records),
         };
       });
       const overallScore = mean(cases.flatMap((c) => c.withRuns));
+      const canaryChecks = receipts.map((receipt) => receipt.canaryTouched);
+      const canaryTouched = canaryChecks.some((value) => value === true) ? true
+        : canaryChecks.length > 0 && canaryChecks.every((value) => value === false) ? false : null;
       return makeRunResult({
-        ...base, cases, sessions, overallScore, costUsd: sumReportedUsdCosts(receipts), canaryTouched: receipts.some((receipt) => receipt.canaryTouched),
+        ...base, cases, sessions, overallScore, costUsd: sumReportedUsdCosts(receipts), canaryTouched,
         status: stopReason ? sessions ? CLIENT_STATUS.PARTIAL : CLIENT_STATUS.ERROR
           : overallScore === 1 ? CLIENT_STATUS.PASSED : CLIENT_STATUS.BELOW_THRESHOLD,
-        caveats: stopReason ? [...base.caveats, stopReason] : base.caveats,
+        caveats: [
+          ...base.caveats,
+          ...(canaryTouched === null ? ['Canary leak check was inconclusive for at least one execution.'] : []),
+          ...(stopReason ? [stopReason] : []),
+        ],
       });
     },
   });

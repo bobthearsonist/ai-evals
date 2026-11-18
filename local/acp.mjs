@@ -126,14 +126,27 @@ export {
   validateAcpProfile,
 };
 
-export async function executeAcp(options) {
+export async function executeAcp(options, {
+  prepareEnvironment = prepareAcpEnvironment,
+  executeConfigured = executeConfiguredAcp,
+} = {}) {
   assertExecutionOptions(options);
-  const isolated = options.isolatedClient ? prepareAcpEnvironment(options.isolatedClient) : null;
+  const isolated = options.isolatedClient ? prepareEnvironment(options.isolatedClient) : null;
+  let transcript;
+  let failure;
   try {
-    return await executeConfiguredAcp(options, isolated?.env ?? { ...process.env, ...(options.env ?? {}) });
-  } finally {
-    isolated?.cleanup();
+    transcript = await executeConfigured(options, isolated?.env ?? { ...process.env, ...(options.env ?? {}) });
+  } catch (error) {
+    failure = error;
   }
+  try {
+    isolated?.cleanup();
+  } catch (error) {
+    if (failure) throw new AggregateError([failure, error], `ACP execution and isolated-home cleanup failed: ${failure.message}; ${error.message}`);
+    transcript = { ...transcript, cleanupError: error.message };
+  }
+  if (failure) throw failure;
+  return transcript;
 }
 
 async function executeConfiguredAcp(options, environment) {

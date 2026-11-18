@@ -112,6 +112,7 @@ export function validateAcpProfile({
   sessionMeta,
   mcpServers,
   skillName,
+  projectInstructions = false,
 } = {}) {
   const selectedProfile = profile ?? (client === 'custom' ? 'custom' : client);
   const errors = [];
@@ -120,6 +121,7 @@ export function validateAcpProfile({
   if (typeof cwd !== 'string' || !cwd || !isAbsolutePath(cwd)) errors.push('cwd must be an absolute path');
   if (model !== undefined && (typeof model !== 'string' || !model.trim())) errors.push('model must be a non-empty string');
   if (mcpServers !== undefined && !Array.isArray(mcpServers)) errors.push('mcpServers must be an array');
+  if (typeof projectInstructions !== 'boolean') errors.push('projectInstructions must be a boolean');
   if (!Array.isArray(requiredCapabilities) || requiredCapabilities.some((capability) => typeof capability !== 'string')) {
     errors.push('requiredCapabilities must be an array of capability names');
   }
@@ -170,7 +172,8 @@ export function validateAcpProfile({
       } else if (selectedProfile === 'copilot') {
         launchCommand ??= 'copilot';
         launchArgs = [
-          '--acp', '--stdio', '--no-auto-update', '--no-custom-instructions',
+          '--acp', '--stdio', '--no-auto-update',
+          ...(projectInstructions ? [] : ['--no-custom-instructions']),
           '--disable-builtin-mcps', '--no-ask-user', '--no-bash-env',
           '--available-tools', 'view', 'glob', 'grep', 'skill',
           '--allow-tool', 'view', '--allow-tool', 'glob', '--allow-tool', 'grep', '--allow-tool', 'skill',

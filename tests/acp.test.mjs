@@ -84,6 +84,10 @@ test('buildAcpLaunch creates a side-effect-free launch and frozen judge isolatio
     }
   }
   assert.equal(validateAcpProfile({ client: 'opencode', cwd: root }).valid, false);
+  const withInstructions = validateAcpProfile({ client: 'copilot', cwd: root, projectInstructions: true });
+  assert.equal(withInstructions.valid, true);
+  assert.ok(!withInstructions.args.includes('--no-custom-instructions'));
+  assert.equal(validateAcpProfile({ client: 'copilot', cwd: root, projectInstructions: 'yes' }).valid, false);
   assert.throws(() => buildAcpLaunch({
     client: 'claude', mode: 'judge', profile: 'ai-evals-judge', cwd: root, model: 'x',
     sessionMeta: { disableBuiltInTools: false },
@@ -109,6 +113,22 @@ test('missing ACP executable returns an actionable client, profile and path erro
   assert.match(result.errors.join('; '), /ACP client custom \(profile custom\)/);
   assert.ok(result.errors.join('; ').includes(executable));
   assert.match(result.errors.join('; '), /Verify the executable exists/);
+});
+
+test('isolated-home cleanup errors are returned without mutating the frozen transcript', async () => {
+  const options = buildAcpLaunch({
+    client: 'copilot', mode: 'candidate', command: process.execPath,
+    cwd: root, prompt: 'Synthetic cleanup test.', timeoutMs: 2_000,
+  });
+  const transcript = Object.freeze({ finalText: 'ok', complete: true, errors: Object.freeze([]) });
+  const result = await executeAcp(options, {
+    prepareEnvironment: () => ({ env: {}, cleanup() { throw new Error('locked home'); } }),
+    executeConfigured: async () => transcript,
+  });
+  assert.notEqual(result, transcript);
+  assert.equal(result.cleanupError, 'locked home');
+  assert.equal(result.finalText, 'ok');
+  assert.equal(Object.isFrozen(transcript), true);
 });
 
 test('real ACP child process streams text, tool calls, usage and protocol events', async () => {

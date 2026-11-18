@@ -32,6 +32,7 @@ export function resolveConfig({ configPath, flags = {}, cwd = process.cwd() } = 
     skillsRoots: skillsRoots.length ? skillsRoots : [resolve(base, '..', 'skills')],
     outputDir: abs(flags.outputDir ?? cfg.outputDir ?? '.work/local-runs', flags.outputDir ? cwd : base),
     resultsDir: abs(flags.resultsDir ?? cfg.resultsDir ?? '.work/results', flags.resultsDir ? cwd : base),
+    instructionFile: flags.instructionFile ? abs(flags.instructionFile, cwd) : cfg.instructionFile ? abs(cfg.instructionFile) : null,
     suites: cfg.suites ?? {},
   };
 }

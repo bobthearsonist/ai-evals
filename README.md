@@ -75,6 +75,13 @@ override config with paths relative to the working directory.
 `EVAL_SKILL_ROOT` can also override skill roots. With no `suites` mapping, suite
 ids equal their skill names and case directories.
 
+Optionally set `instructionFile` in the config, or pass `--instruction-file PATH`,
+to snapshot one explicit instruction file and stage it as `AGENTS.md` for Copilot
+or `CLAUDE.md` for Claude in both arms. The archived bytes and SHA-256 are retained
+in the run; ambient home instructions remain isolated. Use only content intended
+to be sent to the client. Config paths are relative to the config file, and flag
+paths to the working directory.
+
 ```powershell
 npx --no-install ai-evals preflight --client claude --model MODEL_ID
 npx --no-install ai-evals smoke --config evals/evals.json --suite my-suite --model MODEL_ID --approve-sessions 1
@@ -315,7 +322,8 @@ It supports text and tool-order checks. ACP cannot capture filesystem
 snapshots, so filesystem checks are refused before execution.
 
 Results use the `acp-non-hermetic` label; this is not authentication attestation.
-ACP preflight does not authenticate or launch a subprocess.
+Native preflight launches a local version probe and verifies existing credential
+availability. It does not authenticate with a provider or make an inference call.
 
 ## Common ACP transport and separate AI assessments
 
@@ -331,7 +339,7 @@ inference. Unsupported controls cause refusal, not a less-isolated fallback.
 Offline fake-server success is not native-runtime acceptance.
 The built-in **candidate** profiles use Copilot CLI **1.0.102** or the package's
 pinned Claude ACP adapter **0.94.0** / Claude Agent SDK **0.3.303**. Copilot
-disables custom instructions and built-in MCPs and exposes only
+disables ambient home instructions and built-in MCPs and exposes only
 `view`, `glob`, `grep`, `skill`; Claude exposes only `Read`, `Glob`, `Grep`,
 `Skill`, uses project-only settings and strict empty MCP configuration.
 Each arm gets a temporary Git workspace with fixtures; only the with-skill

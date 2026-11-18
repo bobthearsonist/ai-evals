@@ -28,6 +28,8 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
     const fixturesDir = join(root, 'inputs');
     mkdirSync(fixturesDir);
     writeFileSync(join(fixturesDir, 'input.txt'), 'synthetic fixture');
+    const instructionFile = join(root, 'instruction.md');
+    writeFileSync(instructionFile, 'Synthetic guidance.\n');
     const cases = compileFeature(feature
       .replace('    When the user asks:', '    Given the suite fixtures are available\n    When the user asks:')
       .replace('Say hello.', 'Say hello. Read {{fixtures}}.'), { uri: 'transport.feature' });
@@ -48,12 +50,14 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
         workspaces.push(cwd);
         assert.equal(prompt, `Say hello. Read ${join(cwd, 'fixtures')}.`);
         assert.equal(readFileSync(join(cwd, 'fixtures', 'input.txt'), 'utf8'), 'synthetic fixture');
+        assert.equal(readFileSync(join(cwd, client === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'), 'utf8'), 'Synthetic guidance.\n');
+        assert.equal(options.projectInstructions, true);
         assert.equal(existsSync(join(cwd, client === 'claude' ? '.claude' : '.github', 'skills', 'demo')), calls === 1);
         assert.equal(options.skillName, calls === 1 ? 'demo' : undefined);
         return { finalText: 'hello', toolCalls: [], raw: 'hello', complete: true, usage: null, errors: [] };
       },
     });
-    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, fixturesDir, cases });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, fixturesDir, instructionFile, cases });
     const result = await runner.run(cases, {
       ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'with-without', model: 'fake-model',
     });
@@ -72,6 +76,73 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
     assert.equal(replay[0].withoutScore, result.cases[0].withoutScore);
     const receipt = JSON.parse(readFileSync(join(root, 'traces', 'greeting', 'with-1.jsonl.receipt.json')));
     assert.equal(receipt.usage, null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const failedCleanup of ['workspace', 'home']) test(`ACP runner preserves completed evidence when ${failedCleanup} cleanup fails`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-cleanup-'));
+  const workspaces = [];
+  try {
+    const source = join(root, 'skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\nGreet.\n');
+    const cases = compileFeature(feature, { uri: 'cleanup.feature' });
+    let calls = 0;
+    const runner = createAcpRunner({
+      client: 'copilot', launch: (options) => options,
+      execute: async ({ cwd }) => {
+        workspaces.push(cwd);
+        calls++;
+        return { finalText: 'hello', toolCalls: [], raw: '', complete: true, errors: [],
+          ...(failedCleanup === 'home' ? { cleanupError: 'locked home' } : {}) };
+      },
+      cleanup: (path) => {
+        if (failedCleanup === 'workspace') throw new Error('locked workspace');
+        rmSync(path, { recursive: true, force: true });
+      },
+    });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases });
+    const result = await runner.run(cases, { ...prepared, outputDir: join(root, 'output'), runs: 1, ablation: 'with-without', model: 'fake-model' });
+    assert.equal(result.status, 'partial');
+    assert.equal(calls, 1);
+    assert.equal(result.cases[0].withScore, 1);
+    assert.match(result.caveats.at(-1), /cleanup failed/);
+    const receipt = JSON.parse(readFileSync(join(root, 'traces', 'greeting', 'with-1.jsonl.receipt.json')));
+    assert.equal(receipt.valid, true);
+    assert.match(receipt.cleanupError, /locked/);
+    assert.equal(parseAcpTrace(readFileSync(join(root, 'traces', 'greeting', 'with-1.jsonl'), 'utf8')).finalText, 'hello');
+  } finally {
+    for (const workspace of workspaces) if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ACP runner stops consistently when bounded workspace cleanup fails', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-deferred-cleanup-'));
+  try {
+    const source = join(root, 'skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\nGreet.\n');
+    const cases = compileFeature(feature, { uri: 'cleanup.feature' });
+    const attempts = new Map();
+    const runner = createAcpRunner({
+      client: 'copilot', launch: (options) => options,
+      execute: async () => ({ finalText: 'hello', toolCalls: [], raw: '', complete: true, errors: [] }),
+      cleanup: (path) => {
+        const count = (attempts.get(path) ?? 0) + 1;
+        attempts.set(path, count);
+        if (attempts.size === 1 && count === 1) throw new Error('temporarily locked');
+        rmSync(path, { recursive: true, force: true });
+      },
+    });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases });
+    const result = await runner.run(cases, { ...prepared, outputDir: join(root, 'output'), runs: 1, ablation: 'with-without', model: 'fake-model' });
+    assert.equal(result.status, 'partial');
+    assert.equal(result.sessions, 1);
+    assert.match(result.caveats.at(-1), /workspace cleanup failed/);
+    assert.equal(result.cases[0].partial, true);
+    assert.match(result.cases[0].partialReason, /temporarily locked/);
+    assert.deepEqual([...attempts.values()], [1]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -95,6 +166,8 @@ test('ACP runner archives failed evidence, excludes it, and never retries', asyn
     assert.equal(result.status, 'partial');
     assert.equal(result.cases[0].withScore, null);
     assert.equal(result.cases[0].invalidRuns, 1);
+    assert.equal(result.canaryTouched, null);
+    assert.ok(result.caveats.some((caveat) => /Canary leak check was inconclusive/.test(caveat)));
     const replay = regradeRun({ cases, tracesDir: join(root, 'traces'), parse: parseAcpTrace, requireReceipt: true });
     assert.equal(replay[0].invalidRuns, 1);
     assert.equal(replay[0].withScore, null);

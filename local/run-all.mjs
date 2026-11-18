@@ -14,7 +14,7 @@ import { getRunner, validateCapabilities } from './contract.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 try {
 if (process.argv.includes('--help')) {
-  console.log('usage: ai-evals <run-all|run|smoke|preflight> [flags]\n\nFlags: --runners ID[,ID] | --client ID --suite NAME | --suites A,B --case ID (repeatable for smoke)\n       --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH\n       --runs N --concurrency 1..8 --model ID --<client>-model ID --<client>-exe PATH\n       --acp-profile PATH --claude-acp-profile PATH --copilot-acp-profile PATH\n       --approve-sessions N --dry-run --json\nExit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.');
+  console.log('usage: ai-evals <run-all|run|smoke|preflight> [flags]\n\nFlags: --runners ID[,ID] | --client ID --suite NAME | --suites A,B --case ID (repeatable for smoke)\n         --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH --instruction-file PATH\n       --runs N --concurrency 1..8 --model ID --<client>-model ID --<client>-exe PATH\n       --acp-profile PATH --claude-acp-profile PATH --copilot-acp-profile PATH\n       --approve-sessions N --dry-run --json\nExit codes: 0 success; 1 evaluation/preflight failure or below threshold; 2 usage/config/approval error.');
   process.exit(0);
 }
 const { values, positionals } = parseArgs({
@@ -23,7 +23,7 @@ const { values, positionals } = parseArgs({
     concurrency: { type: 'string', default: '4' }, runs: { type: 'string', default: '3' },
     'approve-sessions': { type: 'string' }, suite: { type: 'string' }, suites: { type: 'string' },
     case: { type: 'string', multiple: true }, config: { type: 'string' }, 'cases-dir': { type: 'string' },
-    'output-dir': { type: 'string' }, 'results-dir': { type: 'string' }, 'skill-root': { type: 'string' },
+    'output-dir': { type: 'string' }, 'results-dir': { type: 'string' }, 'skill-root': { type: 'string' }, 'instruction-file': { type: 'string' },
     client: { type: 'string' }, runners: { type: 'string', multiple: true }, exe: { type: 'string' },
     model: { type: 'string' }, 'copilot-model': { type: 'string' },
     'claude-model': { type: 'string' }, 'opencode-model': { type: 'string' },
@@ -113,7 +113,7 @@ if (values['dry-run']) {
 if (command !== 'preflight' && Number(values['approve-sessions']) !== total) {
   throw new Error(`approval gate: this starts ${total} live session(s) across ${suites.length} suites and ${runners.length} runner(s); pass --approve-sessions ${total} to proceed`);
 }
-const passthrough = ['config', 'cases-dir', 'output-dir', 'results-dir', 'skill-root'].flatMap((k) => values[k] === undefined ? [] : [`--${k}`, values[k]]);
+const passthrough = ['config', 'cases-dir', 'output-dir', 'results-dir', 'skill-root', 'instruction-file'].flatMap((k) => values[k] === undefined ? [] : [`--${k}`, values[k]]);
 // Check every selected client before any paid work, not after another client has spent its budget.
 const preflights = [];
 for (const id of ids) {

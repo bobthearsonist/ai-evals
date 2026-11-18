@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeTemporaryDirectory } from './cleanup.mjs';
 
 export function assertNoManagedClaudeSettings(resolved) {
   if (!resolved || typeof resolved.effective !== 'object' || resolved.effective === null) {
@@ -16,6 +17,7 @@ const SYSTEM_ENVIRONMENT = new Set([
   'path', 'pathext', 'systemroot', 'windir', 'comspec', 'systemdrive',
   'temp', 'tmp', 'tmpdir', 'lang', 'lc_all', 'term',
   'processor_architecture', 'number_of_processors',
+  'http_proxy', 'https_proxy', 'no_proxy', 'node_extra_ca_certs', 'ssl_cert_file',
 ]);
 
 export function resolveAcpCredentials(client, {
@@ -88,22 +90,25 @@ export function prepareAcpEnvironment(client, { env = process.env, credentials =
         COPILOT_AUTO_UPDATE: 'false',
         ...credentials,
       },
-      cleanup() { rmSync(home, { recursive: true, force: true }); },
+      cleanup() { removeTemporaryDirectory(home); },
     };
   } catch (error) {
-    rmSync(home, { recursive: true, force: true });
+    removeTemporaryDirectory(home);
     throw error;
   }
 }
 
-export function checkAcpRuntime(launch) {
+export function checkAcpRuntime(launch, {
+  exec = execFileSync,
+  resolveCredentials = resolveAcpCredentials,
+} = {}) {
   if (!launch.isolatedClient) return { authentication: 'not checked; explicit custom profile' };
   if (launch.isolatedClient === 'copilot') {
     const isolated = prepareAcpEnvironment('copilot', { credentials: {} });
     try {
       let version;
       try {
-        version = execFileSync(launch.command, ['--version', '--no-auto-update'], {
+        version = exec(launch.command, ['--version', '--no-auto-update'], {
           env: isolated.env, encoding: 'utf8', timeout: 10_000,
           stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
@@ -120,7 +125,7 @@ export function checkAcpRuntime(launch) {
   } else {
     const isolated = prepareAcpEnvironment('claude', { credentials: {} });
     try {
-      const version = execFileSync(launch.command, [...launch.args, '--version'], {
+      const version = exec(launch.command, [...launch.args, '--version'], {
         env: isolated.env, encoding: 'utf8', timeout: 15_000,
         stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
       });
@@ -132,6 +137,6 @@ export function checkAcpRuntime(launch) {
       );
     } finally { isolated.cleanup(); }
   }
-  resolveAcpCredentials(launch.isolatedClient);
+  resolveCredentials(launch.isolatedClient);
   return { authentication: 'existing credential available; provider access not checked; no model call made' };
 }

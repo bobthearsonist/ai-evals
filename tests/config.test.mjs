@@ -20,15 +20,17 @@ test('config paths resolve relative to the config file and flags override them',
   const dir = mkdtempSync(join(tmpdir(), 'cfg-'));
   mkdirSync(join(dir, 'evals'));
   const p = join(dir, 'evals', 'evals.json');
-  writeFileSync(p, JSON.stringify({ casesDir: 'cases', skillsRoots: ['../skills'], suites: { a: { skill: 'real-skill', cases: 'a-cases' } } }));
+  writeFileSync(p, JSON.stringify({ casesDir: 'cases', skillsRoots: ['../skills'], instructionFile: 'guidance.md', suites: { a: { skill: 'real-skill', cases: 'a-cases' } } }));
   const c = resolveConfig({ configPath: p, cwd });
   assert.equal(c.casesDir, join(dir, 'evals', 'cases'));
   assert.deepEqual(c.skillsRoots, [join(dir, 'skills')]);
   assert.equal(c.outputDir, join(dir, 'evals', '.work', 'local-runs'));
+  assert.equal(c.instructionFile, join(dir, 'evals', 'guidance.md'));
   assert.deepEqual(suiteSettings(c, 'a'), { skill: 'real-skill', casesFolder: 'a-cases' });
   assert.deepEqual(suiteSettings(c, 'b'), { skill: 'b', casesFolder: 'b' });
-  const o = resolveConfig({ configPath: p, cwd, flags: { outputDir: join(dir, 'out') } });
+  const o = resolveConfig({ configPath: p, cwd, flags: { outputDir: join(dir, 'out'), instructionFile: 'override.md' } });
   assert.equal(o.outputDir, join(dir, 'out'));
+  assert.equal(o.instructionFile, join(cwd, 'override.md'));
   assert.throws(() => resolveConfig({ configPath: join(dir, 'missing.json'), cwd }));
 });
 

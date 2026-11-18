@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertNoManagedClaudeSettings, prepareAcpEnvironment, resolveAcpCredentials } from '../local/acp-isolation.mjs';
+import { assertNoManagedClaudeSettings, checkAcpRuntime, prepareAcpEnvironment, resolveAcpCredentials } from '../local/acp-isolation.mjs';
 
 test('managed Claude settings fail closed without exposing their values', () => {
   assert.doesNotThrow(() => assertNoManagedClaudeSettings({ effective: {} }));
@@ -28,6 +28,8 @@ test('native environment excludes ambient configuration and keeps credentials of
         ANTHROPIC_BASE_URL: 'https://unwanted.invalid',
         NODE_OPTIONS: '--require=unwanted', BASH_ENV: 'unwanted',
         CLAUDE_AGENT_LOGS: 'unwanted', GH_TOKEN: 'unwanted', OTHER_SECRET: 'unwanted',
+        HTTPS_PROXY: 'https://proxy.example.invalid', HTTP_PROXY: 'http://proxy.example.invalid',
+        NO_PROXY: 'localhost', NODE_EXTRA_CA_CERTS: 'ca.pem', SSL_CERT_FILE: 'ca.pem',
       },
       credentials: client === 'claude' ? { CLAUDE_CODE_OAUTH_TOKEN: 'test-only-secret' } : { COPILOT_GITHUB_TOKEN: 'test-only-secret' },
     });
@@ -36,6 +38,9 @@ test('native environment excludes ambient configuration and keeps credentials of
       assert.equal(isolated.env.USERPROFILE, isolated.home);
       assert.equal(isolated.env.COPILOT_HOME, join(isolated.home, '.copilot'));
       assert.equal(isolated.env.CLAUDE_CONFIG_DIR, join(isolated.home, '.claude'));
+      for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) {
+        assert.ok(isolated.env[key], key);
+      }
       for (const key of ['NODE_OPTIONS', 'BASH_ENV', 'ANTHROPIC_BASE_URL', 'COPILOT_PROVIDER_BASE_URL',
         'CLAUDE_AGENT_LOGS', 'GH_TOKEN', 'OTHER_SECRET', 'COPILOT_CUSTOM_INSTRUCTIONS_DIRS']) {
         assert.equal(isolated.env[key], undefined, key);
@@ -83,4 +88,24 @@ test('credential resolution is explicit, never logs or starts a login, and rejec
     },
   }), { COPILOT_GITHUB_TOKEN: 'existing' });
   assert.throws(() => resolveAcpCredentials('copilot', { env: {}, exec: forbidden }), /no login was attempted/);
+});
+
+test('native preflight rejects unavailable credentials after checking the pinned runtime', () => {
+  for (const [client, version] of [['claude', '0.94.0'], ['copilot', '1.0.102']]) {
+    const launch = { isolatedClient: client, command: 'synthetic-runtime', args: [], expectedAgentVersion: version };
+    const checked = [];
+    const exec = () => { checked.push('runtime'); return version; };
+    assert.throws(() => checkAcpRuntime(launch, {
+      exec,
+      resolveCredentials(selected) {
+        assert.equal(selected, client);
+        checked.push('credential');
+        throw new Error('existing credential expired; no refresh attempted');
+      },
+    }), /existing credential expired/);
+    assert.deepEqual(checked, ['runtime', 'credential']);
+    const result = checkAcpRuntime(launch, { exec, resolveCredentials: () => ({}) });
+    assert.match(result.authentication, /existing credential available/);
+    assert.match(result.authentication, /provider access not checked/);
+  }
 });

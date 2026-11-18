@@ -38,6 +38,7 @@ Commands:
   report RUN_DIR [--answer]              Show per-trace checks and Skill calls
 
 Common flags: --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH
+              --instruction-file PATH
               --client ID | --runners ID[,ID] --model ID --exe PATH --timeout-seconds N --json
               --dry-run --approve-sessions N --acp-profile PATH
 Run flags: --suite NAME --case ID (repeatable for smoke) --runs N --concurrency 1..8
@@ -67,6 +68,7 @@ const { values, positionals } = parseArgs({
     'cases-dir': { type: 'string' },
     'output-dir': { type: 'string' },
     'results-dir': { type: 'string' },
+    'instruction-file': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
     policy: { type: 'string' },
     'acp-profile': { type: 'string' },
@@ -84,7 +86,7 @@ if (command === 'report') {
   process.exit(0);
 }
 if (values.answer && command !== 'report') throw new Error('--answer is only supported by report');
-const config = resolveConfig({ configPath: values.config, flags: { skillRoot: values['skill-root'], casesDir: values['cases-dir'], outputDir: values['output-dir'], resultsDir: values['results-dir'] } });
+const config = resolveConfig({ configPath: values.config, flags: { skillRoot: values['skill-root'], casesDir: values['cases-dir'], outputDir: values['output-dir'], resultsDir: values['results-dir'], instructionFile: values['instruction-file'] } });
 const SKILL_ROOTS = config.skillsRoots;
 const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => existsSync(join(p, 'SKILL.md')));
 if (values.policy !== undefined && command !== 'regrade') throw new Error('--policy is only supported by regrade');
@@ -210,9 +212,9 @@ const outDir = join(config.outputDir, `${ts}-${command}`);
 mkdirSync(outDir, { recursive: true });
 const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null, caseIds: smoke ? selectedCaseIds : undefined });
 const prepared = runner.prepare({
-  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, cases,
+  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, instructionFile: config.instructionFile, cases,
 });
-const { skillHash, canaryToken } = prepared;
+const { skillHash, instructionHash, canaryToken } = prepared;
 const singleResults = [];
 for (const id of smoke && selectedCaseIds.length > 1 ? selectedCaseIds : [caseId]) {
   singleResults.push(await runner.run(cases, { ...prepared, ...runnerOptions, outputDir: join(outDir, 'eval-output'), runs, ablation, caseId: id, concurrency: Number(values.concurrency) }));
@@ -226,7 +228,7 @@ const result = singleResults.length === 1 ? singleResults[0] : {
   status: singleResults.some((item) => !['passed', 'below_threshold'].includes(item.status)) ? 'partial'
     : singleResults.every((item) => item.status === 'passed') ? 'passed' : 'below_threshold',
 };
-const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
+const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, instructionSha256: instructionHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
 writeFileSync(join(outDir, 'normalized.json'), JSON.stringify(normalized, null, 2));
 if (!smoke && result.cases?.length) {
   const { diff } = recordRun(config.resultsDir, values.suite, normalized);
