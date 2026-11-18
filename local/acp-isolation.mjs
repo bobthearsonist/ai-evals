@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +20,35 @@ const SYSTEM_ENVIRONMENT = new Set([
   'processor_architecture', 'number_of_processors',
   'http_proxy', 'https_proxy', 'no_proxy', 'node_extra_ca_certs', 'ssl_cert_file',
 ]);
+
+export function readCopilotInstructionEvidence({ cwd, copilotHome, sessionId }) {
+  let instructions;
+  try {
+    instructions = readFileSync(join(cwd, 'AGENTS.md'));
+  } catch (error) {
+    return error.code === 'ENOENT' ? { status: 'not-configured' }
+      : { status: 'unavailable', reason: 'Cannot read staged project instructions' };
+  }
+  const expected = instructions.toString('utf8').replaceAll('\r\n', '\n').trimEnd();
+  const instructionSha256 = createHash('sha256').update(instructions).digest('hex');
+  const base = { source: 'copilot-native-session-events', instructionSha256 };
+  if (!expected || !copilotHome || typeof sessionId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+    return { ...base, status: 'unavailable', reason: 'Native session identity is unavailable' };
+  }
+  try {
+    const text = readFileSync(join(copilotHome, 'session-state', sessionId, 'events.jsonl'), 'utf8');
+    const events = text.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
+    const messages = events.filter((event) => event.type === 'system.message'
+      && ['system', 'developer'].includes(event.data?.role)
+      && typeof event.data?.content === 'string'
+      && event.data.content.replaceAll('\r\n', '\n').includes(expected));
+    return messages.length
+      ? { ...base, status: 'observed-model-input', sessionId, events: messages }
+      : { ...base, status: 'unavailable', sessionId, reason: 'Native model-input events do not contain the staged instructions' };
+  } catch {
+    return { ...base, status: 'unavailable', sessionId, reason: 'Native session event log is missing or unreadable' };
+  }
+}
 
 export function resolveAcpCredentials(client, {
   env = process.env,

@@ -1,8 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertNoManagedClaudeSettings, checkAcpRuntime, prepareAcpEnvironment, resolveAcpCredentials } from '../local/acp-isolation.mjs';
+import { assertNoManagedClaudeSettings, checkAcpRuntime, prepareAcpEnvironment, readCopilotInstructionEvidence, resolveAcpCredentials } from '../local/acp-isolation.mjs';
+
+test('instruction delivery requires native model-input events, not staged bytes or tool output', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'native-instructions-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const options = { cwd: root, copilotHome: root, sessionId: 'native-session' };
+  assert.equal(readCopilotInstructionEvidence(options).status, 'not-configured');
+  writeFileSync(join(root, 'AGENTS.md'), 'Use the coordination protocol.\r\n');
+  assert.equal(readCopilotInstructionEvidence(options).status, 'unavailable');
+  const directory = join(root, 'session-state', options.sessionId);
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, 'events.jsonl');
+  const writeEvents = (events) => writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n'));
+  writeEvents([{ type: 'tool.execution_complete', data: { role: 'system', content: 'Use the coordination protocol.' } }]);
+  assert.equal(readCopilotInstructionEvidence(options).status, 'unavailable');
+  const event = { type: 'system.message', data: { role: 'developer', content: 'Instructions:\nUse the coordination protocol.\n' } };
+  writeEvents([event]);
+  const result = readCopilotInstructionEvidence(options);
+  assert.equal(result.status, 'observed-model-input');
+  assert.deepEqual(result.events, [event]);
+  assert.match(result.instructionSha256, /^[a-f0-9]{64}$/);
+  writeEvents([{ ...event, data: { ...event.data, role: 'user' } }]);
+  assert.equal(readCopilotInstructionEvidence(options).status, 'unavailable');
+  assert.equal(readCopilotInstructionEvidence({ ...options, sessionId: '..' }).status, 'unavailable');
+  writeFileSync(path, 'not JSON');
+  assert.equal(readCopilotInstructionEvidence(options).status, 'unavailable');
+});
 
 test('managed Claude settings fail closed without exposing their values', () => {
   assert.doesNotThrow(() => assertNoManagedClaudeSettings({ effective: {} }));

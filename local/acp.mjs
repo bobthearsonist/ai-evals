@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { client as createClient, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import { buildAcpLaunch, isBuiltAcpLaunch, validateAcpProfile } from './acp-profiles.mjs';
-import { prepareAcpEnvironment } from './acp-isolation.mjs';
+import { prepareAcpEnvironment, readCopilotInstructionEvidence } from './acp-isolation.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -129,6 +129,7 @@ export {
 export async function executeAcp(options, {
   prepareEnvironment = prepareAcpEnvironment,
   executeConfigured = executeConfiguredAcp,
+  captureInstructions = readCopilotInstructionEvidence,
 } = {}) {
   assertExecutionOptions(options);
   const isolated = options.isolatedClient ? prepareEnvironment(options.isolatedClient) : null;
@@ -138,6 +139,20 @@ export async function executeAcp(options, {
     transcript = await executeConfigured(options, isolated?.env ?? { ...process.env, ...(options.env ?? {}) });
   } catch (error) {
     failure = error;
+  }
+  if (transcript && isolated && options.isolatedClient === 'copilot') {
+    const created = Array.isArray(transcript.raw)
+      ? transcript.raw.find((event) => event.method === 'session/new' && event.direction === 'in' && event.result?.sessionId)
+      : null;
+    let nativeInstructions;
+    try {
+      nativeInstructions = captureInstructions({
+        cwd: options.cwd, copilotHome: isolated.env.COPILOT_HOME, sessionId: created?.result.sessionId,
+      });
+    } catch {
+      nativeInstructions = { status: 'unavailable', reason: 'Native instruction evidence capture failed' };
+    }
+    transcript = { ...transcript, nativeInstructions };
   }
   try {
     isolated?.cleanup();

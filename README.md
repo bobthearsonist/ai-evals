@@ -81,6 +81,10 @@ or `CLAUDE.md` for Claude in both arms. The archived bytes and SHA-256 are retai
 in the run; ambient home instructions remain isolated. Use only content intended
 to be sent to the client. Config paths are relative to the config file, and flag
 paths to the working directory.
+Native Copilot captures also retain matching `system.message` events from its
+isolated session log before cleanup, when available. These record instruction
+text as model input; staged bytes or an instruction-file hash alone do not prove
+delivery. Missing native events are explicitly unavailable, never inferred.
 
 ```powershell
 npx --no-install ai-evals preflight --client claude --model MODEL_ID

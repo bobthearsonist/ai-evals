@@ -131,6 +131,36 @@ test('isolated-home cleanup errors are returned without mutating the frozen tran
   assert.equal(Object.isFrozen(transcript), true);
 });
 
+test('native instruction input evidence is retained before isolated-home cleanup', async () => {
+  const options = buildAcpLaunch({
+    client: 'copilot', cwd: root, model: 'synthetic-model',
+    prompt: 'Synthetic instruction capture.', timeoutMs: 2_000,
+  });
+  const order = [];
+  const result = await executeAcp(options, {
+    prepareEnvironment: () => ({ env: { COPILOT_HOME: 'isolated-home' }, cleanup() { order.push('cleanup'); } }),
+    executeConfigured: async () => ({
+      finalText: 'ok', complete: true, errors: [],
+      raw: [{ direction: 'in', method: 'session/new', result: { sessionId: 'native-session' } }],
+    }),
+    captureInstructions: (input) => {
+      assert.deepEqual(input, { cwd: root, copilotHome: 'isolated-home', sessionId: 'native-session' });
+      order.push('capture');
+      return { status: 'observed-model-input', events: [] };
+    },
+  });
+  assert.deepEqual(order, ['capture', 'cleanup']);
+  assert.equal(result.nativeInstructions.status, 'observed-model-input');
+  let cleaned = false;
+  const unavailable = await executeAcp(options, {
+    prepareEnvironment: () => ({ env: {}, cleanup() { cleaned = true; } }),
+    executeConfigured: async () => ({ finalText: 'ok', complete: true, errors: [], raw: [] }),
+    captureInstructions: () => { throw new Error('unreadable native evidence'); },
+  });
+  assert.equal(cleaned, true);
+  assert.equal(unavailable.nativeInstructions.status, 'unavailable');
+});
+
 test('real ACP child process streams text, tool calls, usage and protocol events', async () => {
   const result = await executeAcp(fakeOptions());
   assert.equal(result.complete, true, JSON.stringify(result));
