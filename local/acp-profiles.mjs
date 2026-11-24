@@ -203,7 +203,13 @@ export function validateAcpProfile({
           settingSources: ['project'],
           strictMcpConfig: true,
           allowDangerouslySkipPermissions: false,
-          settings: { disableAllHooks: true },
+          settings: {
+            disableAllHooks: true,
+            claudeMdExcludes: [workspaceOnlyMemory(cwd)],
+            // The read-only tools are otherwise allowed on any path, including
+            // the user's installed skills and plugins.
+            permissions: { blockReadsOutsideWorkingDirectories: true },
+          },
         } } };
       }
     } catch (error) {
@@ -259,6 +265,19 @@ export function buildAcpLaunch(options = {}) {
   freezeDeep(launch);
   BUILT_LAUNCHES.add(launch);
   return launch;
+}
+
+// The project setting source loads CLAUDE.md, .claude/CLAUDE.md and
+// .claude/rules from every ancestor of cwd up to the filesystem root, not only
+// up to the repository root. A temporary workspace under the user's profile
+// (the Windows default) would therefore load ~/.claude/CLAUDE.md as project
+// memory. claudeMdExcludes matches picomatch globs against forward-slash
+// absolute paths after converting every backslash, so escaping is impossible;
+// keep only files below the workspace's own (generated, unique) directory name.
+function workspaceOnlyMemory(cwd) {
+  const name = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  if (!name || /^[A-Za-z]:$/.test(name)) return '**';
+  return `!**/${name.replace(/[^A-Za-z0-9._-]/g, '?')}/**`;
 }
 
 function isAbsolutePath(value) {

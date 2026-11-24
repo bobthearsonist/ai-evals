@@ -33,6 +33,8 @@ test('both clients use ACP and reject unavailable or unsupported executable over
     assert.equal(preflight.ok, false);
     assert.equal(preflight.transport, 'acp');
     assert.match(preflight.problems.join(';'), /command overrides are not supported|not runnable/);
+    assert.match(preflight.isolation, /not an OS sandbox/);
+    if (client === 'claude') assert.match(preflight.isolation, /workspace-only CLAUDE\.md; read-only tools limited to the workspace/);
   }
 });
 

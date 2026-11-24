@@ -376,6 +376,16 @@ pinned Claude ACP adapter **0.94.0** / Claude Agent SDK **0.3.303**. Copilot
 disables ambient home instructions and built-in MCPs and exposes only
 `view`, `glob`, `grep`, `skill`; Claude exposes only `Read`, `Glob`, `Grep`,
 `Skill`, uses project-only settings and strict empty MCP configuration.
+Claude Code reads project `CLAUDE.md`, `.claude/CLAUDE.md` and `.claude/rules`
+from every ancestor of the working directory up to the filesystem root, and
+the Windows temporary directory sits inside the user profile, so the Claude
+profile sets `claudeMdExcludes` to keep only memory files inside the session
+workspace (excluding, for example, `~/.claude/CLAUDE.md` and `~/CLAUDE.md`).
+It also sets `permissions.blockReadsOutsideWorkingDirectories`, so `Read`,
+`Glob` and `Grep` are refused outside the workspace instead of browsing
+installed skills or plugins; the pinned client also withholds memory files
+outside the workspace under that setting, so the two controls overlap. Both
+are enforced by the Claude client, not by an OS sandbox.
 Each arm gets a temporary Git workspace with fixtures and any configured skill
 dependencies; only the with-skill arm contains the selected skill. Both use temporary HOME/config directories,
 drop ambient provider/configuration environment variables and pass existing

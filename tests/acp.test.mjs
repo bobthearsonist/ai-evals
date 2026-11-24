@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildAcpLaunch, executeAcp, validateAcpProfile } from '../local/acp.mjs';
 
@@ -83,6 +83,15 @@ test('buildAcpLaunch creates a side-effect-free launch and frozen judge isolatio
       assert.ok(candidate.args.includes('skill'));
     }
   }
+  const claudeSettings = (cwd) => validateAcpProfile({ client: 'claude', cwd, model: 'm' }).sessionMeta.claudeCode.options.settings;
+  const generated = claudeSettings(join(root, 'ai-evals-acp-workspace-Ab12Cd'));
+  assert.equal(generated.disableAllHooks, true);
+  assert.deepEqual(generated.claudeMdExcludes, ['!**/ai-evals-acp-workspace-Ab12Cd/**'],
+    'ancestor CLAUDE.md files, such as ~/.claude/CLAUDE.md above a profile temp directory, are excluded');
+  assert.equal(generated.permissions.blockReadsOutsideWorkingDirectories, true);
+  assert.deepEqual(claudeSettings(`${join(root, 'odd name (1)[x]')}${sep}`).claudeMdExcludes, ['!**/odd?name??1??x?/**']);
+  assert.deepEqual(claudeSettings('C:\\').claudeMdExcludes, ['**'], 'a filesystem-root cwd keeps no memory files');
+  assert.deepEqual(claudeSettings('/').claudeMdExcludes, ['**']);
   const withDependencies = validateAcpProfile({ client: 'claude', cwd: root, model: 'm', skillName: 'demo', skillDependencies: ['helper'] });
   assert.equal(withDependencies.valid, true, withDependencies.errors.join(';'));
   assert.deepEqual(withDependencies.sessionMeta.claudeCode.options.skills, ['demo', 'helper']);

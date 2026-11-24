@@ -140,7 +140,10 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       }
       return {
         ok: problems.length === 0, problems, transport: 'acp', profile: acpProfile ? 'custom' : client,
-        capabilities: this.capabilities, isolation: acpProfile ? 'not verified; non-hermetic' : 'isolated configuration and read-only tools; not an OS sandbox; live acceptance not checked',
+        capabilities: this.capabilities, isolation: acpProfile ? 'not verified; non-hermetic'
+          : client === 'claude'
+            ? 'temporary home, project-only settings and workspace-only CLAUDE.md; read-only tools limited to the workspace by the client; not an OS sandbox; live acceptance not checked'
+            : 'isolated configuration and read-only tools; not an OS sandbox; live acceptance not checked',
         authentication,
       };
     },
