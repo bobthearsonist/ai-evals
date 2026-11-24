@@ -147,9 +147,11 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
     async run(suite, options) {
       const {
         skillName, skillSnapshot, fixtureSnapshot, instructionSnapshot, canaryToken, outputDir, model,
-        runs, ablation, caseId, timeoutSeconds = 120,
+        runs, ablation, caseId, timeoutSeconds = 120, dependencies = [],
       } = options;
       if (!Number.isInteger(runs) || runs < 1 || !['none', 'with-without'].includes(ablation)) throw new Error('invalid ACP schedule');
+      const dependencySkills = dependencies.map((dependency) => dependency.name);
+      if (dependencySkills.includes(skillName)) throw new Error(`skill "${skillName}" cannot be staged as its own dependency`);
       const selected = suite.filter((c) => !caseId || c.id === caseId);
       if (!selected.length) throw new Error('no ACP cases selected');
       for (const c of selected) {
@@ -185,6 +187,8 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           if (instructionSnapshot) cpSync(instructionSnapshot, join(workspace, client === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'));
           const skillsRoot = join(workspace, client === 'claude' ? '.claude' : '.github', 'skills');
           mkdirSync(skillsRoot, { recursive: true });
+          // Dependencies are environment in both arms; ablation removes only the skill under test.
+          for (const dependency of dependencies) cpSync(dependency.snapshot, join(skillsRoot, dependency.name), { recursive: true });
           if (arm === 'with') cpSync(skillSnapshot, join(skillsRoot, skillName), { recursive: true });
           const fixtures = join(workspace, 'fixtures');
           if (c.fixtures) cpSync(fixtureSnapshot, fixtures, { recursive: true });
@@ -192,6 +196,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
             client, mode: 'candidate', model, cwd: workspace, timeoutMs: timeoutSeconds * 1000,
             projectInstructions: Boolean(instructionSnapshot),
             ...(arm === 'with' ? { skillName } : {}),
+            ...(dependencySkills.length ? { skillDependencies: dependencySkills } : {}),
             prompt: c.fixtures ? c.prompt.replaceAll('{{fixtures}}', fixtures) : c.prompt,
             ...(exe ? { command: exe } : {}),
           });
@@ -205,7 +210,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           receipt.exitCode = 0;
           receipt.canaryTouched = transcript.raw?.includes(canaryToken) ?? false;
           if (!transcript.complete || transcript.errors?.length) throw new Error(transcript.errors?.join('; ') || 'ACP transcript incomplete');
-          receipt.grade = gradeTranscript(c, transcript, { arm, canaryToken });
+          receipt.grade = gradeTranscript(c, transcript, { arm, canaryToken, dependencySkills });
           if (receipt.grade.invalid || receipt.grade.score == null) throw new Error(
             receipt.grade.errors?.map((error) => error.diagnostic).join('; ') || 'required grading evidence unavailable',
           );

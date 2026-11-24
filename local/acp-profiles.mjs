@@ -112,6 +112,7 @@ export function validateAcpProfile({
   sessionMeta,
   mcpServers,
   skillName,
+  skillDependencies = [],
   projectInstructions = false,
 } = {}) {
   const selectedProfile = profile ?? (client === 'custom' ? 'custom' : client);
@@ -138,6 +139,11 @@ export function validateAcpProfile({
     if (client !== selectedProfile) errors.push('native ACP client must match its profile');
     if (args || env || sessionMeta || mcpServers?.length) errors.push('native ACP candidate profiles do not allow args, env, sessionMeta or MCP overrides');
     if (skillName !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(skillName)) errors.push('skillName must be kebab-case');
+    if (!Array.isArray(skillDependencies) || skillDependencies.some((name) => typeof name !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(name))) {
+      errors.push('skillDependencies must be an array of kebab-case skill names');
+    } else if (skillName !== undefined && skillDependencies.includes(skillName)) {
+      errors.push('skillDependencies must not include skillName');
+    }
   }
   if (selectedProfile === 'ai-evals-judge') {
     if (client !== 'claude') errors.push('ai-evals-judge is available only for the Claude ACP adapter');
@@ -192,7 +198,8 @@ export function validateAcpProfile({
           ...(model ? { model } : {}),
           tools: ['Read', 'Glob', 'Grep', 'Skill'],
           allowedTools: ['Read', 'Glob', 'Grep', 'Skill'],
-          skills: skillName ? [skillName] : [],
+          // This allowlist hides every other skill, so staged dependencies must be listed too.
+          skills: [...(skillName ? [skillName] : []), ...skillDependencies],
           settingSources: ['project'],
           strictMcpConfig: true,
           allowDangerouslySkipPermissions: false,

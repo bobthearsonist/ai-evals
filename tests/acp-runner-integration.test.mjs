@@ -79,6 +79,61 @@ for (const client of ['claude', 'copilot']) test(`${client} stages paired Gherki
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+for (const client of ['claude', 'copilot']) test(`${client} stages skill dependencies in both arms and grades only the skill under test`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-runner-deps-'));
+  try {
+    const source = join(root, 'skill');
+    const helper = join(root, 'helper');
+    for (const [dir, name] of [[source, 'demo'], [helper, 'helper']]) {
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\n---\n${name} body\n`);
+    }
+    const cases = compileFeature(feature, { uri: 'deps.feature' });
+    const launches = [];
+    const runner = createAcpRunner({
+      client,
+      launch: (options) => options,
+      execute: async (options) => {
+        const skills = join(options.cwd, client === 'claude' ? '.claude' : '.github', 'skills');
+        launches.push({
+          skillName: options.skillName, skillDependencies: options.skillDependencies,
+          helper: readFileSync(join(skills, 'helper', 'SKILL.md'), 'utf8'),
+          demo: existsSync(join(skills, 'demo')) ? readFileSync(join(skills, 'demo', 'SKILL.md'), 'utf8') : null,
+        });
+        // Loading the staged dependency is not a trigger of the skill under test.
+        return { finalText: 'hello', toolCalls: [{ id: 't1', name: 'Skill', rawInput: { skill: 'helper' }, status: 'completed' }],
+          raw: 'hello', complete: true, usage: null, errors: [] };
+      },
+    });
+    const prepared = runner.prepare({ outDir: root, skillName: 'demo', skillSourceDir: source, cases,
+      dependencies: [{ name: 'helper', sourceDir: helper }] });
+    const result = await runner.run(cases, { ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'with-without', model: 'fake-model' });
+    assert.deepEqual(launches, [
+      { skillName: 'demo', skillDependencies: ['helper'], helper: '---\nname: helper\n---\nhelper body\n', demo: '---\nname: demo\n---\ndemo body\n' },
+      { skillName: undefined, skillDependencies: ['helper'], helper: '---\nname: helper\n---\nhelper body\n', demo: null },
+    ]);
+    assert.equal(result.status, 'passed', JSON.stringify(result.caveats));
+    assert.equal(result.cases[0].withoutScore, 1, 'a dependency Skill call does not fail the without arm');
+    const replay = regradeRun({ cases, tracesDir: join(root, 'traces'), parse: parseAcpTrace,
+      canaryToken: prepared.canaryToken, requireReceipt: true, dependencySkills: ['helper'] });
+    assert.equal(replay[0].withoutScore, 1);
+    const unaware = regradeRun({ cases, tracesDir: join(root, 'traces'), parse: parseAcpTrace,
+      canaryToken: prepared.canaryToken, requireReceipt: true });
+    assert.ok(unaware[0].withoutScore < 1, 'without the recorded dependencies every Skill call still counts');
+    await assert.rejects(runner.run(cases, { ...prepared, outputDir: join(root, 'collision'), runs: 1, ablation: 'none', model: 'fake-model',
+      dependencies: [{ name: 'demo', snapshot: prepared.dependencies[0].snapshot }] }), /own dependency/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('skill trigger evidence ignores only the recorded dependencies', () => {
+  const [c] = compileFeature(feature, { uri: 'trigger.feature' });
+  const transcript = (skill) => ({ finalText: 'hello', raw: 'hello', transport: 'acp',
+    toolCalls: [{ id: 't1', name: 'Skill', rawInput: { skill } }] });
+  assert.equal(gradeTranscript(c, transcript('helper'), { arm: 'without', dependencySkills: ['helper'] }).score, 1);
+  assert.ok(gradeTranscript(c, transcript('demo'), { arm: 'without', dependencySkills: ['helper'] }).score < 1);
+  assert.ok(gradeTranscript(c, transcript('helper'), { arm: 'without' }).score < 1);
+});
+
 for (const failedCleanup of ['workspace', 'home']) test(`ACP runner preserves completed evidence when ${failedCleanup} cleanup fails`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'acp-cleanup-'));
   const workspaces = [];

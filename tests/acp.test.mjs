@@ -83,6 +83,14 @@ test('buildAcpLaunch creates a side-effect-free launch and frozen judge isolatio
       assert.ok(candidate.args.includes('skill'));
     }
   }
+  const withDependencies = validateAcpProfile({ client: 'claude', cwd: root, model: 'm', skillName: 'demo', skillDependencies: ['helper'] });
+  assert.equal(withDependencies.valid, true, withDependencies.errors.join(';'));
+  assert.deepEqual(withDependencies.sessionMeta.claudeCode.options.skills, ['demo', 'helper']);
+  assert.deepEqual(validateAcpProfile({ client: 'claude', cwd: root, model: 'm', skillDependencies: ['helper'] })
+    .sessionMeta.claudeCode.options.skills, ['helper'], 'the without arm still exposes its dependencies');
+  for (const skillDependencies of ['helper', ['../escape'], ['demo']]) {
+    assert.equal(validateAcpProfile({ client: 'claude', cwd: root, skillName: 'demo', skillDependencies }).valid, false);
+  }
   assert.equal(validateAcpProfile({ client: 'opencode', cwd: root }).valid, false);
   const withInstructions = validateAcpProfile({ client: 'copilot', cwd: root, projectInstructions: true });
   assert.equal(withInstructions.valid, true);

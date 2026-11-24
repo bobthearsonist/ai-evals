@@ -5,10 +5,18 @@
 // transcript: { finalText, toolCalls: [{ name, input }], raw }
 import { evaluateCheck } from './assertions.mjs';
 
+// Skill calls that count as the skill under test triggering. Loading a staged
+// dependency is part of the environment in both arms, so it never counts.
+export function skillTriggerCalls(toolCalls, dependencySkills = []) {
+  const dependencies = new Set(dependencySkills);
+  return toolCalls.filter((call) => call?.name === 'Skill'
+    && !dependencies.has(call.rawInput?.skill ?? call.input?.skill));
+}
+
 // Returns { score, checks } with score = fraction of gradable checks passed.
 // Adds the skill-trigger check (with-arm must call Skill when the case expects it; the
 // without-arm must never) and the canary check.
-export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
+export function gradeTranscript(c, transcript, { arm, canaryToken, dependencySkills = [] } = {}) {
   if (c.schemaVersion !== 2) throw new Error('only compiled schemaVersion 2 cases are supported');
   if (c.fixtures && transcript.transport === 'acp') {
     const reads = transcript.toolCalls.filter((call) =>
@@ -24,7 +32,7 @@ export function gradeTranscript(c, transcript, { arm, canaryToken } = {}) {
     transcript.toolCalls.every((call) => call && (typeof call.name === 'string'
       || (transcript.transport === 'acp' && call.name === undefined && ['read', 'search'].includes(call.kind))));
   const toolCalls = validToolEvidence ? transcript.toolCalls : [];
-  const skillCalls = toolCalls.filter((t) => t.name === 'Skill').length;
+  const skillCalls = skillTriggerCalls(toolCalls, dependencySkills).length;
   const triggerCheck = (passed) => !validToolEvidence
     ? { name: 'skill-trigger', passed: null, diagnostic: 'tool-call evidence is missing' }
     : { name: 'skill-trigger', passed };

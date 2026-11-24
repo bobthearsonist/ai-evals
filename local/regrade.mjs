@@ -2,9 +2,18 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gradeTranscript, verdict } from './grade.mjs';
 
+// Dependency skills recorded in a run's normalized.json; runs that predate them staged none.
+export function archivedDependencySkills(metadata) {
+  const recorded = metadata?.skillDependencies ?? [];
+  if (!Array.isArray(recorded) || recorded.some((dependency) => typeof dependency?.name !== 'string')) {
+    throw new Error('invalid archived skill dependencies');
+  }
+  return recorded.map((dependency) => dependency.name);
+}
+
 // Re-grades archived traces (<runDir>/traces/<case>/<arm>-<n>.jsonl) with the shared grader.
 // `parse` is the client's trace parser. Runs without a final result are excluded, as in live runs.
-export function regradeRun({ tracesDir, cases, parse, canaryToken, requireReceipt = true }) {
+export function regradeRun({ tracesDir, cases, parse, canaryToken, requireReceipt = true, dependencySkills = [] }) {
   const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
   return cases.map((c) => {
     const dir = join(tracesDir, c.id);
@@ -23,7 +32,7 @@ export function regradeRun({ tracesDir, cases, parse, canaryToken, requireReceip
         }
         const t = parse(readFileSync(join(dir, f), 'utf8'));
         if (!t.complete) { invalidRuns++; continue; }
-        const g = gradeTranscript(c, t, { arm, canaryToken });
+        const g = gradeTranscript(c, t, { arm, canaryToken, dependencySkills });
         if (g.invalid || g.score == null) invalidRuns++;
         else scores[arm].push(g.score);
       }

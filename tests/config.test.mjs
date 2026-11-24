@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { resolveConfig, suiteSettings } from '../local/config.mjs';
+import { resolveConfig, skillDependencyClosure, suiteSettings, validateSkillDependencies } from '../local/config.mjs';
 import { validateCase } from '../local/contract.mjs';
 
 const cwd = resolve(import.meta.dirname, '..');
@@ -49,6 +49,50 @@ test('discovers evals/evals.json from nested working directories', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('skill dependencies resolve from config and default to none', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-deps-'));
+  try {
+    const p = join(dir, 'evals.json');
+    writeFileSync(p, JSON.stringify({ skillDependencies: { 'sprint-metrics': ['devops'] } }));
+    assert.deepEqual(resolveConfig({ configPath: p, cwd }).skillDependencies, { 'sprint-metrics': ['devops'] });
+    writeFileSync(p, JSON.stringify({}));
+    assert.deepEqual(resolveConfig({ configPath: p, cwd }).skillDependencies, {});
+    writeFileSync(p, JSON.stringify({ skillDependencies: { a: ['a'] } }));
+    assert.throws(() => resolveConfig({ configPath: p, cwd }), /must not depend on itself/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('skill dependency configuration rejects malformed values and cycles', () => {
+  for (const [value, pattern] of [
+    [[], /must be an object/],
+    ['devops', /must be an object/],
+    [{ a: 'b' }, /must be an array/],
+    [{ a: [1] }, /kebab-case/],
+    [{ a: ['Not-Kebab'] }, /kebab-case/],
+    [{ 'Bad Name': ['b'] }, /kebab-case/],
+    [{ a: ['b', 'b'] }, /more than once/],
+    [{ a: ['a'] }, /must not depend on itself/],
+    [{ a: ['b'], b: ['a'] }, /cycle: a -> b -> a/],
+    [{ a: ['b'], b: ['c'], c: ['b'] }, /cycle: (a -> )?b -> c -> b/],
+  ]) {
+    assert.throws(() => validateSkillDependencies(value), pattern, JSON.stringify(value));
+  }
+  assert.deepEqual(validateSkillDependencies(undefined), {});
+  assert.deepEqual(validateSkillDependencies({ a: [] }), { a: [] });
+});
+
+test('skill dependency closure is transitive, deduplicated and excludes the skill', () => {
+  const dependencies = validateSkillDependencies({
+    metrics: ['devops', 'conventions'], devops: ['conventions', 'auth'], conventions: [], constructor: ['auth'],
+  });
+  assert.deepEqual(skillDependencyClosure(dependencies, 'metrics'), ['devops', 'conventions', 'auth']);
+  assert.deepEqual(skillDependencyClosure(dependencies, 'devops'), ['conventions', 'auth']);
+  assert.deepEqual(skillDependencyClosure(dependencies, 'constructor'), ['auth']);
+  assert.deepEqual(skillDependencyClosure(dependencies, 'unlisted'), []);
+  assert.deepEqual(skillDependencyClosure({}, 'toString'), []);
+  assert.throws(() => skillDependencyClosure({ a: ['b'], b: ['a'] }, 'a'), /cycle/);
 });
 
 test('compiled cases require schemaVersion 2 and named checks', () => {

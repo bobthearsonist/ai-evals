@@ -67,6 +67,30 @@ test('workspace snapshots preserve source bytes and hash and keep the canary out
   assert.equal(noFixtures.fixtureSnapshot, null);
 });
 
+test('skill dependencies are snapshotted beside the skill under test with their own hashes', (t) => {
+  const { root, options } = setup(t);
+  const helper = join(root, 'helper');
+  mkdirSync(join(helper, 'references'), { recursive: true });
+  writeFileSync(join(helper, 'SKILL.md'), '---\nname: helper\n---\nHelp.\n');
+  writeFileSync(join(helper, 'references', 'conventions.md'), 'conventions');
+  const prepared = prepareWorkspace({ ...options, dependencies: [{ name: 'helper', sourceDir: helper }] });
+  assert.deepEqual(prepared.dependencies.map(({ name }) => name), ['helper']);
+  assert.equal(prepared.dependencies[0].snapshot, join(root, 'prepared', 'skill-source', 'helper'));
+  assert.equal(readFileSync(join(prepared.dependencies[0].snapshot, 'references', 'conventions.md'), 'utf8'), 'conventions');
+  assert.equal(prepared.dependencies[0].sha256, hashTree(helper));
+  assert.equal(prepared.skillHash, hashTree(options.skillSourceDir), 'the skill hash still covers only the skill under test');
+  assert.deepEqual(prepareWorkspace({ ...options, outDir: join(root, 'no-deps') }).dependencies, []);
+  for (const [dependencies, pattern] of [
+    [[{ name: 'demo', sourceDir: helper }], /own dependency/],
+    [[{ name: 'helper', sourceDir: helper }, { name: 'helper', sourceDir: helper }], /distinct/],
+    [[{ name: '../escape', sourceDir: helper }], /kebab-case/],
+  ]) {
+    assert.throws(() => prepareWorkspace({ ...options, outDir: join(root, 'rejected'), dependencies }), pattern);
+  }
+  symlinkSync(options.fixturesDir, join(helper, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => prepareWorkspace({ ...options, outDir: join(root, 'linked'), dependencies: [{ name: 'helper', sourceDir: helper }] }), /symlink/);
+});
+
 test('explicit instructions are snapshotted and hashed, and symlinks are refused', (t) => {
   const { root, options } = setup(t);
   const instructionFile = join(root, 'instructions.md');

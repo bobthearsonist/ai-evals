@@ -14,6 +14,7 @@ export function slim(normalized, suite) {
     at: new Date().toISOString(),
     status: normalized.status,
     skillSha256: normalized.skillSha256 ?? null,
+    skillDependencies: normalized.skillDependencies ?? [],
     runs: normalized.runs ?? null,
     costUsd: normalized.costUsd ?? null,
     cases: (normalized.cases ?? []).map((c) => ({

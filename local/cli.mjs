@@ -6,8 +6,8 @@ import { getRunner, validateCapabilities } from './contract.mjs';
 import { loadSuite } from './suite.mjs';
 import { registerStubs } from './stubs.mjs';
 import { recordRun } from './summary.mjs';
-import { regradeRun } from './regrade.mjs';
-import { resolveConfig, suiteSettings } from './config.mjs';
+import { archivedDependencySkills, regradeRun } from './regrade.mjs';
+import { resolveConfig, skillDependencyClosure, suiteSettings } from './config.mjs';
 import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from './policy.mjs';
 import { createAcpRunner } from './acp-runner.mjs';
 import { judgeArchive } from './judge-cli.mjs';
@@ -154,7 +154,10 @@ if (command === 'regrade') {
     currentCases = loadSuite(join(config.casesDir, suiteSettings(config, values.suite).casesFolder));
   }
   const policy = replayPolicy(runDir, { currentCases, mode: values.policy ?? 'recorded' });
-  const out = regradeRun({ tracesDir: join(runDir, 'traces'), cases: policy.cases, parse: runner.parseTrace, canaryToken: meta.canaryToken, requireReceipt: true });
+  const out = regradeRun({
+    tracesDir: join(runDir, 'traces'), cases: policy.cases, parse: runner.parseTrace, canaryToken: meta.canaryToken,
+    requireReceipt: true, dependencySkills: archivedDependencySkills(meta),
+  });
   const path = archiveReplay(runDir, policy, out);
   if (values.json) console.log(JSON.stringify({ policy: policy.mode, policySha256: policy.sha256, assessment: path, cases: out }, null, 2));
   else {
@@ -177,6 +180,12 @@ const skillDir = findSkill(skillName);
 if (!skillDir) {
   throw new Error(`skill "${skillName}" not found under: ${SKILL_ROOTS.join('; ')}`);
 }
+const dependencies = skillDependencyClosure(config.skillDependencies, skillName).map((name) => {
+  const sourceDir = findSkill(name);
+  if (!sourceDir) throw new Error(`skill dependency "${name}" of "${skillName}" not found under: ${SKILL_ROOTS.join('; ')}`);
+  return { name, sourceDir };
+});
+const dependencyNames = dependencies.map(({ name }) => name);
 const smoke = command === 'smoke';
 const requestedCaseIds = values.case ?? [];
 if (!smoke && requestedCaseIds.length > 1) throw new Error('--case may be repeated only for smoke');
@@ -196,7 +205,7 @@ const capabilityProblems = cases.filter((c) => selectedSet.size ? selectedSet.ha
 if (capabilityProblems.length) throw new Error(`unsupported execution evidence:\n- ${capabilityProblems.join('\n- ')}`);
 if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) < 1 || Number(values.concurrency) > 8) throw new Error('--concurrency must be an integer from 1 to 8');
 if (values['dry-run']) {
-  const result = { suite: values.suite, client: runner.id, transport: 'acp', runs, ablation, plannedSessions: planned, policy: policySnapshot(cases.filter((c) => selectedSet.size ? selectedSet.has(c.id) : true)) };
+  const result = { suite: values.suite, client: runner.id, transport: 'acp', runs, ablation, plannedSessions: planned, skillDependencies: dependencyNames, policy: policySnapshot(cases.filter((c) => selectedSet.size ? selectedSet.has(c.id) : true)) };
   console.log(values.json ? JSON.stringify(result, null, 2) : `${values.suite}: dry run; ${selectedSet.size || cases.length} case(s), ${planned} session(s) planned`);
   process.exit(0);
 }
@@ -210,11 +219,12 @@ if (!pre.ok) {
 const ts = `${new Date().toISOString().replace(/[:.]/g, '-')}-${values.suite}-${runner.id}`;
 const outDir = join(config.outputDir, `${ts}-${command}`);
 mkdirSync(outDir, { recursive: true });
-const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null, caseIds: smoke ? selectedCaseIds : undefined });
+const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null, caseIds: smoke ? selectedCaseIds : undefined, skillDependencies: dependencyNames });
 const prepared = runner.prepare({
-  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, instructionFile: config.instructionFile, cases,
+  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, instructionFile: config.instructionFile, cases, dependencies,
 });
 const { skillHash, instructionHash, canaryToken } = prepared;
+const skillDependencies = prepared.dependencies.map(({ name, sha256 }) => ({ name, sha256 }));
 const singleResults = [];
 for (const id of smoke && selectedCaseIds.length > 1 ? selectedCaseIds : [caseId]) {
   singleResults.push(await runner.run(cases, { ...prepared, ...runnerOptions, outputDir: join(outDir, 'eval-output'), runs, ablation, caseId: id, concurrency: Number(values.concurrency) }));
@@ -228,7 +238,7 @@ const result = singleResults.length === 1 ? singleResults[0] : {
   status: singleResults.some((item) => !['passed', 'below_threshold'].includes(item.status)) ? 'partial'
     : singleResults.every((item) => item.status === 'passed') ? 'passed' : 'below_threshold',
 };
-const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, instructionSha256: instructionHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
+const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, skillDependencies, instructionSha256: instructionHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
 writeFileSync(join(outDir, 'normalized.json'), JSON.stringify(normalized, null, 2));
 if (!smoke && result.cases?.length) {
   const { diff } = recordRun(config.resultsDir, values.suite, normalized);

@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { gradeTranscript } from './grade.mjs';
+import { gradeTranscript, skillTriggerCalls } from './grade.mjs';
 import { parseAcpTrace } from './acp-runner.mjs';
 import { replayPolicy } from './policy.mjs';
+import { archivedDependencySkills } from './regrade.mjs';
 
 function checkCondition(definition) {
   const target = { trace: 'trace', commit_subject: 'commit subject', last_message: 'response' }[definition.target ?? 'last_message'] ?? 'response';
@@ -32,6 +33,7 @@ function receiptStatus(path) {
 
 export function reportRun(runDir, { includeAnswer = false, parse = parseAcpTrace } = {}) {
   const metadata = JSON.parse(readFileSync(join(runDir, 'normalized.json'), 'utf8'));
+  const dependencySkills = archivedDependencySkills(metadata);
   const cases = replayPolicy(runDir).cases;
   const byId = new Map(cases.map((c) => [c.id, c]));
   const tracesDir = join(runDir, 'traces');
@@ -50,9 +52,9 @@ export function reportRun(runDir, { includeAnswer = false, parse = parseAcpTrace
       const transcript = parse(readFileSync(tracePath, 'utf8'));
       const receipt = receiptStatus(tracePath);
       const grade = gradeTranscript(caseDefinition, transcript, {
-        arm: match[1], canaryToken: metadata.canaryToken,
+        arm: match[1], canaryToken: metadata.canaryToken, dependencySkills,
       });
-      const skillCalls = transcript.toolCalls.filter((call) => call.name === 'Skill').length;
+      const skillCalls = skillTriggerCalls(transcript.toolCalls, dependencySkills).length;
       const definitions = new Map(caseDefinition.checks.map((check) => [check.name ?? check.pattern ?? check.type, check]));
       results.push({
         caseId,

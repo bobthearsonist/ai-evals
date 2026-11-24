@@ -7,6 +7,7 @@ import { gradeTranscript } from '../local/grade.mjs';
 import { diffRuns, historyRoot } from '../local/summary.mjs';
 import { regradeRun } from '../local/regrade.mjs';
 import { createAcpRunner, parseAcpTrace } from '../local/acp-runner.mjs';
+import { hashTree } from '../local/workspace.mjs';
 
 const cli = resolve(import.meta.dirname, '..', 'local', 'cli.mjs');
 const fake = resolve(import.meta.dirname, 'fixtures', 'fake-acp.mjs');
@@ -218,6 +219,53 @@ test('fixture refusals are invalid ACP evidence; unread, recovered and nonfixtur
     assert.equal(gradeTranscript(c, { ...transcript, toolCalls }).invalid, false);
   }
   assert.equal(gradeTranscript({ ...c, fixtures: false }, transcript).invalid, false);
+});
+
+test('configured skill dependencies are resolved transitively, archived with hashes, and required to exist', (t) => {
+  const { root, profile } = setup(t);
+  const skills = join(root, 'skills');
+  for (const name of ['helper', 'conventions']) {
+    mkdirSync(join(skills, name), { recursive: true });
+    writeFileSync(join(skills, name, 'SKILL.md'), `---\nname: ${name}\n---\n${name}\n`);
+  }
+  const dependencyConfig = join(root, 'evals.json');
+  const writeConfig = (skillDependencies) => writeFileSync(dependencyConfig, JSON.stringify({
+    casesDir: resolve(import.meta.dirname, 'fixtures', 'cases'),
+    skillsRoots: [resolve(import.meta.dirname, 'fixtures', 'skills'), skills],
+    suites: { demo: { skill: 'demo' } },
+    skillDependencies,
+  }));
+  writeConfig({ demo: ['helper'], helper: ['conventions'] });
+  const smoke = ['smoke', '--client', 'claude', '--config', dependencyConfig, '--suite', 'demo', '--case', 'negative-control',
+    '--model', 'synthetic-model', '--acp-profile', profile];
+  const dry = invoke([...smoke, '--dry-run', '--json']);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.deepEqual(JSON.parse(dry.stdout).skillDependencies, ['helper', 'conventions']);
+
+  const output = join(root, 'runs');
+  const result = invoke([...smoke, '--approve-sessions', '1', '--output-dir', output, '--json']);
+  assert.equal(result.status, 1, result.stderr);
+  const normalized = JSON.parse(result.stdout);
+  assert.deepEqual(normalized.skillDependencies, [
+    { name: 'helper', sha256: hashTree(join(skills, 'helper')) },
+    { name: 'conventions', sha256: hashTree(join(skills, 'conventions')) },
+  ]);
+  const runDir = join(output, readdirSync(output)[0]);
+  assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'plan.json'), 'utf8')).skillDependencies, ['helper', 'conventions']);
+  for (const name of ['demo', 'helper', 'conventions']) {
+    assert.match(readFileSync(join(runDir, 'skill-source', name, 'SKILL.md'), 'utf8'), new RegExp(`name: ${name}`));
+  }
+  const replay = invoke(['regrade', runDir]);
+  assert.equal(replay.status, 0, replay.stderr);
+
+  writeConfig({ demo: ['helper', 'missing-skill'] });
+  const missing = invoke([...smoke, '--dry-run']);
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /skill dependency "missing-skill" of "demo" not found/);
+  writeConfig({ demo: ['helper'], helper: ['demo'] });
+  const cyclic = invoke([...smoke, '--dry-run']);
+  assert.equal(cyclic.status, 2);
+  assert.match(cyclic.stderr, /cycle: demo -> helper -> demo/);
 });
 
 test('non-ACP histories are neither accepted nor compared', () => {

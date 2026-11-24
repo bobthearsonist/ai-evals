@@ -129,6 +129,36 @@ as unimplemented by standard entrypoints. Summaries identify runner, transport a
 Add `evals/.work/` and `node_modules/` to the consumer's `.gitignore`.
 Keep evaluation data outside distributed skill/plugin payloads.
 
+### Skill dependencies
+
+When a skill tells the agent to load another skill, declare that dependency so
+it is present during evaluation:
+
+```json
+{
+  "skillDependencies": {
+    "my-skill": ["shared-conventions"]
+  }
+}
+```
+
+Keys and values are skill names (not suite ids); each value is an array of
+distinct kebab-case names. Dependencies are resolved transitively: if
+`shared-conventions` also has an entry, its dependencies are staged too.
+A skill depending on itself, or any cycle, is a configuration error. Each
+dependency is found under `skillsRoots` exactly like the skill under test;
+a missing one fails before any session starts (exit code `2`).
+
+Dependencies are snapshotted beside the skill under test in the run's
+`skill-source/` folder and staged in **both** arms: ablation removes only the
+skill under test, while its dependencies are part of the environment. A
+dependency cannot share the skill under test's name. `plan.json` lists the
+resolved names; `normalized.json` and history record
+`skillDependencies: [{ name, sha256 }]` beside `skillSha256`, which still
+covers only the skill under test. Skill tool calls that load a recorded
+dependency do not count as the skill under test triggering, live or on
+regrade.
+
 ## Case format
 
 Suites are authored only in Gherkin with sample sidecars (see below).
@@ -346,8 +376,8 @@ pinned Claude ACP adapter **0.94.0** / Claude Agent SDK **0.3.303**. Copilot
 disables ambient home instructions and built-in MCPs and exposes only
 `view`, `glob`, `grep`, `skill`; Claude exposes only `Read`, `Glob`, `Grep`,
 `Skill`, uses project-only settings and strict empty MCP configuration.
-Each arm gets a temporary Git workspace with fixtures; only the with-skill
-arm contains the selected skill. Both use temporary HOME/config directories,
+Each arm gets a temporary Git workspace with fixtures and any configured skill
+dependencies; only the with-skill arm contains the selected skill. Both use temporary HOME/config directories,
 drop ambient provider/configuration environment variables and pass existing
 credentials only in the child environment. No credential file is copied.
 Claude refuses active machine-managed settings rather than bypassing policy.
