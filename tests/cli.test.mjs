@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -127,4 +127,32 @@ test('multi-runner preflight failure prevents all paid jobs and reports every cl
   assert.match(r.stdout, /preflight: error client=claude/);
   assert.match(r.stdout, /preflight: error client=copilot/);
   assert.doesNotMatch(r.stdout, /demo: passed/);
+});
+
+test('instructions suites plan paired sessions without a skill and reject missing files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-evals-instructions-cli-'));
+  mkdirSync(join(dir, 'cases', 'guide'), { recursive: true });
+  writeFileSync(join(dir, 'cases', 'guide', 'guide.feature'), `Feature: Guidance
+  @case:applies @should-trigger
+  Scenario: Applies
+    When the user asks:
+      """
+      Say hello.
+      """
+    Then the response contains "hello"
+`);
+  writeFileSync(join(dir, 'cases', 'guide', 'applies.samples.json'), JSON.stringify({ caseId: 'applies', pass: ['hello'], fail: ['bye'] }));
+  writeFileSync(join(dir, 'AGENTS.md'), 'Say hello politely.\n');
+  const cfg = join(dir, 'evals.json');
+  writeFileSync(cfg, JSON.stringify({ casesDir: 'cases', skillsRoots: ['no-skills-here'], suites: { guide: { subject: 'instructions', instructions: 'AGENTS.md' } } }));
+  const validate = run(['validate', '--suite', 'guide', '--config', cfg]);
+  assert.equal(validate.status, 0, validate.stderr);
+  const plan = run(['run', '--suite', 'guide', '--config', cfg, '--runs', '2', '--dry-run', '--json']);
+  assert.equal(plan.status, 0, plan.stderr);
+  const result = JSON.parse(plan.stdout);
+  assert.equal(result.ablationSubject, 'instructions');
+  assert.equal(result.plannedSessions, 4);
+  const missing = run(['run', '--suite', 'guide', '--config', cfg, '--baseline-instruction-file', join(dir, 'nope.md'), '--dry-run']);
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /instruction file not found/);
 });

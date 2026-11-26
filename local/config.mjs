@@ -83,13 +83,73 @@ export function resolveConfig({ configPath, flags = {}, cwd = process.cwd() } = 
     outputDir: abs(flags.outputDir ?? cfg.outputDir ?? '.work/local-runs', flags.outputDir ? cwd : base),
     resultsDir: abs(flags.resultsDir ?? cfg.resultsDir ?? '.work/results', flags.resultsDir ? cwd : base),
     instructionFile: flags.instructionFile ? abs(flags.instructionFile, cwd) : cfg.instructionFile ? abs(cfg.instructionFile) : null,
-    suites: cfg.suites ?? {},
+    // Instruction suites treat --instruction-file as a candidate override, but
+    // reject a config-level instructionFile as ambiguous environment.
+    instructionFileFromFlag: Boolean(flags.instructionFile),
+    baselineInstructionFile: flags.baselineInstructionFile ? abs(flags.baselineInstructionFile, cwd) : null,
+    suites: validateSuites(cfg.suites, abs),
     skillDependencies: validateSkillDependencies(cfg.skillDependencies),
   };
+}
+
+const SUITE_SUBJECTS = ['skill', 'instructions'];
+
+// A suite ablates either a skill (default) or a project instruction file. In an
+// instructions suite the with arm stages `instructions` and the without arm
+// stages `baselineInstructions`, or no instruction file when that is null.
+function validateSuites(value, abs) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('suites must be an object');
+  const suites = {};
+  for (const [id, s] of Object.entries(value)) {
+    if (typeof s !== 'object' || s === null || Array.isArray(s)) throw new Error(`suites.${id} must be an object`);
+    const subject = s.subject ?? 'skill';
+    if (!SUITE_SUBJECTS.includes(subject)) throw new Error(`suites.${id}.subject must be one of: ${SUITE_SUBJECTS.join(', ')}`);
+    if (subject === 'instructions') {
+      if (s.skill !== undefined) throw new Error(`suites.${id}: an instructions suite does not name a skill`);
+      if (typeof s.instructions !== 'string' || !s.instructions) throw new Error(`suites.${id}: an instructions suite requires an "instructions" path`);
+      if (s.baselineInstructions !== undefined && s.baselineInstructions !== null && typeof s.baselineInstructions !== 'string') {
+        throw new Error(`suites.${id}.baselineInstructions must be a path or null`);
+      }
+      suites[id] = {
+        ...s, subject,
+        instructions: abs(s.instructions),
+        baselineInstructions: s.baselineInstructions ? abs(s.baselineInstructions) : null,
+      };
+    } else {
+      if (s.instructions !== undefined || s.baselineInstructions !== undefined) {
+        throw new Error(`suites.${id}: instructions paths require "subject": "instructions"`);
+      }
+      suites[id] = { ...s, subject };
+    }
+  }
+  return suites;
 }
 
 // A suite id may map to a differently named skill and cases folder; default is identity.
 export function suiteSettings(config, suite) {
   const s = config.suites[suite] ?? {};
-  return { skill: s.skill ?? suite, casesFolder: s.cases ?? suite };
+  if (s.subject === 'instructions') {
+    return {
+      subject: 'instructions', skill: null, casesFolder: s.cases ?? suite,
+      instructions: s.instructions, baselineInstructions: s.baselineInstructions,
+    };
+  }
+  return { subject: 'skill', skill: s.skill ?? suite, casesFolder: s.cases ?? suite };
+}
+
+// Resolves the instruction files for one suite. Skill suites stage the shared
+// environment file in both arms; instructions suites ablate candidate vs baseline.
+export function suiteInstructions(config, settings) {
+  if (settings.subject !== 'instructions') {
+    if (config.baselineInstructionFile) throw new Error('--baseline-instruction-file is only supported by instructions suites');
+    return { candidate: config.instructionFile, baseline: config.instructionFile };
+  }
+  if (config.instructionFile && !config.instructionFileFromFlag) {
+    throw new Error('config instructionFile is ambiguous for an instructions suite; set the suite\'s "instructions" instead');
+  }
+  return {
+    candidate: config.instructionFileFromFlag ? config.instructionFile : settings.instructions,
+    baseline: config.baselineInstructionFile ?? settings.baselineInstructions,
+  };
 }

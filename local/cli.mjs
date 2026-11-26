@@ -7,7 +7,7 @@ import { loadSuite } from './suite.mjs';
 import { registerStubs } from './stubs.mjs';
 import { recordRun } from './summary.mjs';
 import { archivedDependencySkills, regradeRun } from './regrade.mjs';
-import { resolveConfig, skillDependencyClosure, suiteSettings } from './config.mjs';
+import { resolveConfig, skillDependencyClosure, suiteInstructions, suiteSettings } from './config.mjs';
 import { archivePolicy, archiveReplay, policySnapshot, replayPolicy } from './policy.mjs';
 import { createAcpRunner } from './acp-runner.mjs';
 import { judgeArchive } from './judge-cli.mjs';
@@ -38,7 +38,7 @@ Commands:
   report RUN_DIR [--answer]              Show per-trace checks and Skill calls
 
 Common flags: --config PATH --cases-dir PATH --skill-root ROOTS --output-dir PATH --results-dir PATH
-              --instruction-file PATH
+              --instruction-file PATH --baseline-instruction-file PATH
               --client ID | --runners ID[,ID] --model ID --exe PATH --timeout-seconds N --json
               --dry-run --approve-sessions N --acp-profile PATH
 Run flags: --suite NAME --case ID (repeatable for smoke) --runs N --concurrency 1..8
@@ -69,6 +69,7 @@ const { values, positionals } = parseArgs({
     'output-dir': { type: 'string' },
     'results-dir': { type: 'string' },
     'instruction-file': { type: 'string' },
+    'baseline-instruction-file': { type: 'string' },
     'dry-run': { type: 'boolean', default: false },
     policy: { type: 'string' },
     'acp-profile': { type: 'string' },
@@ -86,7 +87,7 @@ if (command === 'report') {
   process.exit(0);
 }
 if (values.answer && command !== 'report') throw new Error('--answer is only supported by report');
-const config = resolveConfig({ configPath: values.config, flags: { skillRoot: values['skill-root'], casesDir: values['cases-dir'], outputDir: values['output-dir'], resultsDir: values['results-dir'], instructionFile: values['instruction-file'] } });
+const config = resolveConfig({ configPath: values.config, flags: { skillRoot: values['skill-root'], casesDir: values['cases-dir'], outputDir: values['output-dir'], resultsDir: values['results-dir'], instructionFile: values['instruction-file'], baselineInstructionFile: values['baseline-instruction-file'] } });
 const SKILL_ROOTS = config.skillsRoots;
 const findSkill = (name) => SKILL_ROOTS.map((r) => join(r, name)).find((p) => existsSync(join(p, 'SKILL.md')));
 if (values.policy !== undefined && command !== 'regrade') throw new Error('--policy is only supported by regrade');
@@ -156,7 +157,7 @@ if (command === 'regrade') {
   const policy = replayPolicy(runDir, { currentCases, mode: values.policy ?? 'recorded' });
   const out = regradeRun({
     tracesDir: join(runDir, 'traces'), cases: policy.cases, parse: runner.parseTrace, canaryToken: meta.canaryToken,
-    requireReceipt: true, dependencySkills: archivedDependencySkills(meta),
+    requireReceipt: true, dependencySkills: archivedDependencySkills(meta), ablationSubject: meta.ablationSubject ?? 'skill',
   });
   const path = archiveReplay(runDir, policy, out);
   if (values.json) console.log(JSON.stringify({ policy: policy.mode, policySha256: policy.sha256, assessment: path, cases: out }, null, 2));
@@ -167,7 +168,8 @@ if (command === 'regrade') {
   process.exit(0);
 }
 if (!values.suite) throw new Error('--suite is required');
-const { skill: skillName, casesFolder } = suiteSettings(config, values.suite);
+const settings = suiteSettings(config, values.suite);
+const { skill: skillName, casesFolder, subject: ablationSubject } = settings;
 const suiteDir = join(config.casesDir, casesFolder);
 const cases = loadSuite(suiteDir);
 const fixturesDir = join(suiteDir, 'fixtures');
@@ -176,11 +178,15 @@ if (command === 'validate') {
   console.log(values.json ? JSON.stringify(result, null, 2) : `${values.suite}: valid (${cases.length} cases, policy ${result.policy.sha256.slice(0, 12)})`);
   process.exit(0);
 }
-const skillDir = findSkill(skillName);
-if (!skillDir) {
+const instructionFiles = suiteInstructions(config, settings);
+for (const file of [instructionFiles.candidate, instructionFiles.baseline]) {
+  if (file && !existsSync(file)) throw new Error(`instruction file not found: ${file}`);
+}
+const skillDir = skillName ? findSkill(skillName) : null;
+if (skillName && !skillDir) {
   throw new Error(`skill "${skillName}" not found under: ${SKILL_ROOTS.join('; ')}`);
 }
-const dependencies = skillDependencyClosure(config.skillDependencies, skillName).map((name) => {
+const dependencies = (skillName ? skillDependencyClosure(config.skillDependencies, skillName) : []).map((name) => {
   const sourceDir = findSkill(name);
   if (!sourceDir) throw new Error(`skill dependency "${name}" of "${skillName}" not found under: ${SKILL_ROOTS.join('; ')}`);
   return { name, sourceDir };
@@ -205,7 +211,7 @@ const capabilityProblems = cases.filter((c) => selectedSet.size ? selectedSet.ha
 if (capabilityProblems.length) throw new Error(`unsupported execution evidence:\n- ${capabilityProblems.join('\n- ')}`);
 if (!Number.isInteger(Number(values.concurrency)) || Number(values.concurrency) < 1 || Number(values.concurrency) > 8) throw new Error('--concurrency must be an integer from 1 to 8');
 if (values['dry-run']) {
-  const result = { suite: values.suite, client: runner.id, transport: 'acp', runs, ablation, plannedSessions: planned, skillDependencies: dependencyNames, policy: policySnapshot(cases.filter((c) => selectedSet.size ? selectedSet.has(c.id) : true)) };
+  const result = { suite: values.suite, client: runner.id, transport: 'acp', runs, ablation, ablationSubject, plannedSessions: planned, skillDependencies: dependencyNames, policy: policySnapshot(cases.filter((c) => selectedSet.size ? selectedSet.has(c.id) : true)) };
   console.log(values.json ? JSON.stringify(result, null, 2) : `${values.suite}: dry run; ${selectedSet.size || cases.length} case(s), ${planned} session(s) planned`);
   process.exit(0);
 }
@@ -219,11 +225,14 @@ if (!pre.ok) {
 const ts = `${new Date().toISOString().replace(/[:.]/g, '-')}-${values.suite}-${runner.id}`;
 const outDir = join(config.outputDir, `${ts}-${command}`);
 mkdirSync(outDir, { recursive: true });
-const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null, caseIds: smoke ? selectedCaseIds : undefined, skillDependencies: dependencyNames });
+const policy = archivePolicy(outDir, cases, { suite: values.suite, client: runner.id, transport: 'acp', model: values.model ?? null, command, runs, ablation, plannedSessions: planned, caseId: caseId ?? null, caseIds: smoke ? selectedCaseIds : undefined, skillDependencies: dependencyNames, ablationSubject });
 const prepared = runner.prepare({
-  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, instructionFile: config.instructionFile, cases, dependencies,
+  outDir, skillName, skillSourceDir: skillDir, fixturesDir: existsSync(fixturesDir) ? fixturesDir : null, cases, dependencies, ablationSubject,
+  instructionFile: instructionFiles.candidate,
+  // Skill suites stage one shared environment file; only instructions suites carry a baseline.
+  baselineInstructionFile: ablationSubject === 'instructions' ? instructionFiles.baseline : null,
 });
-const { skillHash, instructionHash, canaryToken } = prepared;
+const { skillHash, instructionHash, baselineInstructionHash, canaryToken } = prepared;
 const skillDependencies = prepared.dependencies.map(({ name, sha256 }) => ({ name, sha256 }));
 const singleResults = [];
 for (const id of smoke && selectedCaseIds.length > 1 ? selectedCaseIds : [caseId]) {
@@ -238,7 +247,7 @@ const result = singleResults.length === 1 ? singleResults[0] : {
   status: singleResults.some((item) => !['passed', 'below_threshold'].includes(item.status)) ? 'partial'
     : singleResults.every((item) => item.status === 'passed') ? 'passed' : 'below_threshold',
 };
-const normalized = { ...result, transport: 'acp', suite: values.suite, skillSha256: skillHash, skillDependencies, instructionSha256: instructionHash, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
+const normalized = { ...result, transport: 'acp', suite: values.suite, ablationSubject, skillSha256: skillHash, skillDependencies, instructionSha256: instructionHash, baselineInstructionSha256: baselineInstructionHash ?? null, canaryToken, command, runs, ablation, plannedSessions: planned, policySha256: policy.sha256 };
 writeFileSync(join(outDir, 'normalized.json'), JSON.stringify(normalized, null, 2));
 if (!smoke && result.cases?.length) {
   const { diff } = recordRun(config.resultsDir, values.suite, normalized);

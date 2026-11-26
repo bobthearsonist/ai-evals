@@ -81,6 +81,39 @@ or `CLAUDE.md` for Claude in both arms. The archived bytes and SHA-256 are retai
 in the run; ambient home instructions remain isolated. Use only content intended
 to be sent to the client. Config paths are relative to the config file, and flag
 paths to the working directory.
+### Instructions suites
+
+To evaluate an instruction file itself (an `AGENTS.md` or `CLAUDE.md`) rather
+than a skill, give the suite `"subject": "instructions"`:
+
+```json
+"suites": {
+  "agents-md": {
+    "subject": "instructions",
+    "instructions": "../AGENTS.md",
+    "baselineInstructions": ".work/baseline/AGENTS.md",
+    "cases": "agents-md"
+  }
+}
+```
+
+The with arm stages `instructions` and the without arm stages
+`baselineInstructions`, or no instruction file when it is omitted or null. No
+skill is staged in either arm. Omit the baseline to ask "does this file help at
+all"; point it at a previous version to ask "does this edit help".
+`--instruction-file` and `--baseline-instruction-file` override the two paths
+for one run, so a caller can produce the baseline from version control (for
+example `git show HEAD:AGENTS.md`). A config-level `instructionFile` is refused
+for these suites as ambiguous. Both files are snapshotted and their SHA-256
+recorded as `instructionSha256` and `baselineInstructionSha256`, with
+`ablationSubject` in the plan and `normalized.json`; regrade reads it back.
+
+Scenarios keep the `@should-trigger` / `@should-not-trigger` tag grammar, but no
+`skill-trigger` check is added: the tag only labels a case as one where the
+guidance applies or as a negative control. Copilot honours staged project
+instructions only in arms that have a file; the other arm keeps
+`--no-custom-instructions`.
+
 Native Copilot captures also retain matching `system.message` events from its
 isolated session log before cleanup, when available. These record instruction
 text as model input; staged bytes or an instruction-file hash alone do not prove

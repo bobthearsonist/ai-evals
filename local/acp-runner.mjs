@@ -149,9 +149,18 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
     },
     async run(suite, options) {
       const {
-        skillName, skillSnapshot, fixtureSnapshot, instructionSnapshot, canaryToken, outputDir, model,
+        skillName, skillSnapshot, fixtureSnapshot, instructionSnapshot, baselineInstructionSnapshot = null,
+        ablationSubject = 'skill', canaryToken, outputDir, model,
         runs, ablation, caseId, timeoutSeconds = 120, dependencies = [],
       } = options;
+      if (!['skill', 'instructions'].includes(ablationSubject)) throw new Error('invalid ablation subject');
+      if (ablationSubject === 'instructions' && (!instructionSnapshot || skillSnapshot || dependencies.length)) {
+        throw new Error('an instructions ablation requires a candidate instruction file and no skills');
+      }
+      // Instruction file staged in an arm: shared environment for skill suites,
+      // the ablated subject (candidate vs baseline-or-none) for instructions suites.
+      const armInstructions = (arm) => ablationSubject === 'instructions' && arm === 'without' ? baselineInstructionSnapshot : instructionSnapshot;
+      const armSkill = (arm) => ablationSubject === 'skill' && arm === 'with';
       if (!Number.isInteger(runs) || runs < 1 || !['none', 'with-without'].includes(ablation)) throw new Error('invalid ACP schedule');
       const dependencySkills = dependencies.map((dependency) => dependency.name);
       if (dependencySkills.includes(skillName)) throw new Error(`skill "${skillName}" cannot be staged as its own dependency`);
@@ -187,18 +196,19 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           // A real repository boundary prevents parent-directory configuration
           // discovery even when the caller's temp directory is inside a repo.
           execFileSync('git', ['init', '--quiet', workspace], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-          if (instructionSnapshot) cpSync(instructionSnapshot, join(workspace, client === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'));
+          const instructions = armInstructions(arm);
+          if (instructions) cpSync(instructions, join(workspace, client === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'));
           const skillsRoot = join(workspace, client === 'claude' ? '.claude' : '.github', 'skills');
           mkdirSync(skillsRoot, { recursive: true });
           // Dependencies are environment in both arms; ablation removes only the skill under test.
           for (const dependency of dependencies) cpSync(dependency.snapshot, join(skillsRoot, dependency.name), { recursive: true });
-          if (arm === 'with') cpSync(skillSnapshot, join(skillsRoot, skillName), { recursive: true });
+          if (armSkill(arm)) cpSync(skillSnapshot, join(skillsRoot, skillName), { recursive: true });
           const fixtures = join(workspace, 'fixtures');
           if (c.fixtures) cpSync(fixtureSnapshot, fixtures, { recursive: true });
           const launchOptions = build({
             client, mode: 'candidate', model, cwd: workspace, timeoutMs: timeoutSeconds * 1000,
-            projectInstructions: Boolean(instructionSnapshot),
-            ...(arm === 'with' ? { skillName } : {}),
+            projectInstructions: Boolean(instructions),
+            ...(armSkill(arm) ? { skillName } : {}),
             ...(dependencySkills.length ? { skillDependencies: dependencySkills } : {}),
             prompt: c.fixtures ? c.prompt.replaceAll('{{fixtures}}', fixtures) : c.prompt,
             ...(exe ? { command: exe } : {}),
@@ -213,7 +223,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           receipt.exitCode = 0;
           receipt.canaryTouched = transcript.raw?.includes(canaryToken) ?? false;
           if (!transcript.complete || transcript.errors?.length) throw new Error(transcript.errors?.join('; ') || 'ACP transcript incomplete');
-          receipt.grade = gradeTranscript(c, transcript, { arm, canaryToken, dependencySkills });
+          receipt.grade = gradeTranscript(c, transcript, { arm, canaryToken, dependencySkills, ablationSubject });
           if (receipt.grade.invalid || receipt.grade.score == null) throw new Error(
             receipt.grade.errors?.map((error) => error.diagnostic).join('; ') || 'required grading evidence unavailable',
           );

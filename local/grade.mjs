@@ -16,7 +16,9 @@ export function skillTriggerCalls(toolCalls, dependencySkills = []) {
 // Returns { score, checks } with score = fraction of gradable checks passed.
 // Adds the skill-trigger check (with-arm must call Skill when the case expects it; the
 // without-arm must never) and the canary check.
-export function gradeTranscript(c, transcript, { arm, canaryToken, dependencySkills = [] } = {}) {
+// Instructions ablations stage no skill, so the activation tag only labels the
+// case (guidance applies vs negative control) and adds no skill-trigger check.
+export function gradeTranscript(c, transcript, { arm, canaryToken, dependencySkills = [], ablationSubject = 'skill' } = {}) {
   if (c.schemaVersion !== 2) throw new Error('only compiled schemaVersion 2 cases are supported');
   if (c.fixtures && transcript.transport === 'acp') {
     const reads = transcript.toolCalls.filter((call) =>
@@ -36,7 +38,9 @@ export function gradeTranscript(c, transcript, { arm, canaryToken, dependencySki
   const triggerCheck = (passed) => !validToolEvidence
     ? { name: 'skill-trigger', passed: null, diagnostic: 'tool-call evidence is missing' }
     : { name: 'skill-trigger', passed };
-  if (c.shouldTrigger) {
+  if (ablationSubject === 'instructions') {
+    // no skill under test
+  } else if (c.shouldTrigger) {
     if (arm === 'with') checks.push(triggerCheck(skillCalls >= 1));
   } else {
     checks.push(triggerCheck(skillCalls === 0));

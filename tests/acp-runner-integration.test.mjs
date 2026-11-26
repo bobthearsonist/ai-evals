@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createAcpRunner, parseAcpTrace } from '../local/acp-runner.mjs';
@@ -390,4 +390,69 @@ test('unrecognized anonymous tools cannot be mistaken for skill evidence', () =>
     assert.equal(grade.invalid, true);
     assert.match(grade.errors[0].diagnostic, /tool-call evidence is missing/);
   }
+});
+
+for (const client of ['claude', 'copilot']) for (const withBaseline of [true, false]) test(`${client} ablates the instruction file ${withBaseline ? 'against a baseline' : 'against none'} without staging or grading a skill`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-runner-instructions-'));
+  try {
+    const candidate = join(root, 'candidate.md');
+    const baseline = join(root, 'baseline.md');
+    writeFileSync(candidate, 'Candidate guidance.\n');
+    writeFileSync(baseline, 'Baseline guidance.\n');
+    const memoryFile = client === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
+    const cases = compileFeature(feature.replace('@should-not-trigger', '@should-trigger'), { uri: 'instructions.feature' });
+    const launches = [];
+    const runner = createAcpRunner({
+      client,
+      launch: (options) => options,
+      execute: async (options) => {
+        const staged = join(options.cwd, memoryFile);
+        launches.push({
+          instructions: existsSync(staged) ? readFileSync(staged, 'utf8') : null,
+          projectInstructions: options.projectInstructions,
+          skillName: options.skillName,
+          skills: readdirSync(join(options.cwd, client === 'claude' ? '.claude' : '.github', 'skills')),
+        });
+        return { finalText: 'hello', toolCalls: [], raw: 'hello', complete: true, usage: null, errors: [] };
+      },
+    });
+    const prepared = runner.prepare({
+      outDir: root, cases, ablationSubject: 'instructions',
+      instructionFile: candidate, baselineInstructionFile: withBaseline ? baseline : null,
+    });
+    assert.equal(prepared.skillSnapshot, null);
+    assert.equal(prepared.skillHash, null);
+    assert.equal(prepared.baselineInstructionHash === null, !withBaseline);
+    const result = await runner.run(cases, { ...prepared, outputDir: join(root, 'eval-output'), runs: 1, ablation: 'with-without', model: 'fake-model' });
+    assert.deepEqual(launches, [
+      { instructions: 'Candidate guidance.\n', projectInstructions: true, skillName: undefined, skills: [] },
+      { instructions: withBaseline ? 'Baseline guidance.\n' : null, projectInstructions: withBaseline, skillName: undefined, skills: [] },
+    ]);
+    assert.equal(result.status, 'passed', JSON.stringify(result.caveats));
+    const receipt = JSON.parse(readFileSync(join(root, 'traces', 'greeting', 'with-1.jsonl.receipt.json')));
+    assert.equal(receipt.grade.checks.some((check) => check.name === 'skill-trigger'), false, 'no skill is under test');
+    const replay = regradeRun({ cases, tracesDir: join(root, 'traces'), parse: parseAcpTrace,
+      canaryToken: prepared.canaryToken, requireReceipt: true, ablationSubject: 'instructions' });
+    assert.equal(replay[0].withScore, 1);
+    const skillReplay = regradeRun({ cases, tracesDir: join(root, 'traces'), parse: parseAcpTrace,
+      canaryToken: prepared.canaryToken, requireReceipt: true });
+    assert.ok(skillReplay[0].withScore < 1, 'replaying as a skill suite would wrongly demand a Skill call');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('instructions ablation refuses skills and a missing candidate', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acp-runner-instructions-bad-'));
+  try {
+    const cases = compileFeature(feature, { uri: 'bad.feature' });
+    const runner = createAcpRunner({ client: 'claude', launch: (o) => o, execute: async () => { throw new Error('must not launch'); } });
+    const source = join(root, 'skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '---\nname: demo\n---\n');
+    const candidate = join(root, 'c.md');
+    writeFileSync(candidate, 'x\n');
+    assert.throws(() => runner.prepare({ outDir: root, cases, ablationSubject: 'instructions' }), /requires a candidate/);
+    assert.throws(() => runner.prepare({ outDir: root, cases, ablationSubject: 'instructions', instructionFile: candidate, skillName: 'demo', skillSourceDir: source }), /stages no skill/);
+    assert.throws(() => runner.prepare({ outDir: root, cases, skillName: 'demo', skillSourceDir: source, baselineInstructionFile: candidate }), /requires an instructions ablation/);
+    await assert.rejects(runner.run(cases, { ablationSubject: 'instructions', instructionSnapshot: null, outputDir: join(root, 'o'), runs: 1, ablation: 'with-without', model: 'm' }), /requires a candidate instruction file/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

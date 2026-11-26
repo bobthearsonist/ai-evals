@@ -32,8 +32,28 @@ function assertCopyableTree(dir) {
 
 // `dependencies` are skills the skill under test loads; they are snapshotted
 // beside it so the run records exactly which dependency content it used.
-export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDir, instructionFile, cases, dependencies = [] }) {
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(skillName)) throw new Error('skill name must be kebab-case');
+function snapshotInstruction(file, target) {
+  const stat = lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('instruction file must be a regular file, not a symlink');
+  const content = readFileSync(file);
+  writeFileSync(target, content, { flag: 'wx' });
+  return { snapshot: target, sha256: createHash('sha256').update(content).digest('hex') };
+}
+
+// `ablationSubject` 'instructions' runs without a skill: the with arm stages
+// `instructionFile` and the without arm `baselineInstructionFile` (or none).
+export function prepareWorkspace({
+  outDir, skillName = null, skillSourceDir = null, fixturesDir, instructionFile, baselineInstructionFile = null,
+  cases, dependencies = [], ablationSubject = 'skill',
+}) {
+  if (!['skill', 'instructions'].includes(ablationSubject)) throw new Error('ablation subject must be skill or instructions');
+  if (ablationSubject === 'instructions') {
+    if (skillName || skillSourceDir || dependencies.length) throw new Error('an instructions ablation stages no skill or skill dependencies');
+    if (!instructionFile) throw new Error('an instructions ablation requires a candidate instruction file');
+  } else {
+    if (baselineInstructionFile) throw new Error('a baseline instruction file requires an instructions ablation');
+    if (typeof skillName !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(skillName)) throw new Error('skill name must be kebab-case');
+  }
   if (!Array.isArray(dependencies)) throw new Error('skill dependencies must be an array');
   const dependencyNames = dependencies.map((dependency) => dependency?.name);
   for (const name of dependencyNames) {
@@ -47,16 +67,18 @@ export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDi
     if (c.fixtures && !fixturesDir) problems.push('case requires a fixtures directory');
     if (problems.length) throw new Error(`${c.id}: ${problems.join('; ')}`);
   }
-  const source = realpathSync(skillSourceDir);
-  assertCopyableTree(source);
+  const source = skillSourceDir ? realpathSync(skillSourceDir) : null;
+  if (source) assertCopyableTree(source);
   const dependencySources = dependencies.map(({ name, sourceDir }) => {
     const dependencySource = realpathSync(sourceDir);
     assertCopyableTree(dependencySource);
     return { name, source: dependencySource };
   });
-  const skillSnapshot = join(outDir, 'skill-source', skillName);
-  mkdirSync(dirname(skillSnapshot), { recursive: true });
-  cpSync(source, skillSnapshot, { recursive: true });
+  const skillSnapshot = source ? join(outDir, 'skill-source', skillName) : null;
+  if (source) {
+    mkdirSync(dirname(skillSnapshot), { recursive: true });
+    cpSync(source, skillSnapshot, { recursive: true });
+  }
   const dependencySnapshots = dependencySources.map(({ name, source: dependencySource }) => {
     const snapshot = join(outDir, 'skill-source', name);
     cpSync(dependencySource, snapshot, { recursive: true });
@@ -69,20 +91,15 @@ export function prepareWorkspace({ outDir, skillName, skillSourceDir, fixturesDi
     fixtureSnapshot = join(outDir, 'fixture-source');
     cpSync(fixtures, fixtureSnapshot, { recursive: true });
   }
-  let instructionSnapshot = null;
-  let instructionHash = null;
-  if (instructionFile) {
-    const stat = lstatSync(instructionFile);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('instruction file must be a regular file, not a symlink');
-    const content = readFileSync(instructionFile);
-    instructionSnapshot = join(outDir, 'instruction-source.md');
-    writeFileSync(instructionSnapshot, content, { flag: 'wx' });
-    instructionHash = createHash('sha256').update(content).digest('hex');
-  }
+  const candidate = instructionFile ? snapshotInstruction(instructionFile, join(outDir, 'instruction-source.md')) : null;
+  const baseline = baselineInstructionFile ? snapshotInstruction(baselineInstructionFile, join(outDir, 'instruction-baseline.md')) : null;
   const canaryToken = randomBytes(24).toString('hex');
   writeFileSync(join(outDir, 'canary.txt'), canaryToken);
   return {
-    skillName, skillSnapshot, fixtureSnapshot, skillHash: hashTree(skillSnapshot), dependencies: dependencySnapshots,
-    instructionSnapshot, instructionHash, canaryToken,
+    ablationSubject, skillName, skillSnapshot, fixtureSnapshot, skillHash: skillSnapshot ? hashTree(skillSnapshot) : null,
+    dependencies: dependencySnapshots,
+    instructionSnapshot: candidate?.snapshot ?? null, instructionHash: candidate?.sha256 ?? null,
+    baselineInstructionSnapshot: baseline?.snapshot ?? null, baselineInstructionHash: baseline?.sha256 ?? null,
+    canaryToken,
   };
 }

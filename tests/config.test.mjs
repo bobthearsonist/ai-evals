@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { resolveConfig, skillDependencyClosure, suiteSettings, validateSkillDependencies } from '../local/config.mjs';
+import { resolveConfig, suiteInstructions, skillDependencyClosure, suiteSettings, validateSkillDependencies } from '../local/config.mjs';
 import { validateCase } from '../local/contract.mjs';
 
 const cwd = resolve(import.meta.dirname, '..');
@@ -26,8 +26,8 @@ test('config paths resolve relative to the config file and flags override them',
   assert.deepEqual(c.skillsRoots, [join(dir, 'skills')]);
   assert.equal(c.outputDir, join(dir, 'evals', '.work', 'local-runs'));
   assert.equal(c.instructionFile, join(dir, 'evals', 'guidance.md'));
-  assert.deepEqual(suiteSettings(c, 'a'), { skill: 'real-skill', casesFolder: 'a-cases' });
-  assert.deepEqual(suiteSettings(c, 'b'), { skill: 'b', casesFolder: 'b' });
+  assert.deepEqual(suiteSettings(c, 'a'), { subject: 'skill', skill: 'real-skill', casesFolder: 'a-cases' });
+  assert.deepEqual(suiteSettings(c, 'b'), { subject: 'skill', skill: 'b', casesFolder: 'b' });
   const o = resolveConfig({ configPath: p, cwd, flags: { outputDir: join(dir, 'out'), instructionFile: 'override.md' } });
   assert.equal(o.outputDir, join(dir, 'out'));
   assert.equal(o.instructionFile, join(cwd, 'override.md'));
@@ -102,4 +102,41 @@ test('compiled cases require schemaVersion 2 and named checks', () => {
     assert.ok(validateCase({ ...ok, schemaVersion }).length > 0);
   }
   assert.ok(validateCase({ ...ok, checks: [{ type: 'regex', pattern: 'a' }] }).length > 0);
+});
+
+test('instructions suites resolve candidate and baseline paths and validate their shape', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-instr-'));
+  mkdirSync(join(dir, 'evals'));
+  const p = join(dir, 'evals', 'evals.json');
+  const write = (suites, extra = {}) => writeFileSync(p, JSON.stringify({ casesDir: 'cases', suites, ...extra }));
+  write({ guide: { subject: 'instructions', instructions: '../AGENTS.md', baselineInstructions: '.work/baseline.md', cases: 'agents-md' }, plain: {} });
+  const c = resolveConfig({ configPath: p, cwd });
+  const settings = suiteSettings(c, 'guide');
+  assert.deepEqual(settings, {
+    subject: 'instructions', skill: null, casesFolder: 'agents-md',
+    instructions: join(dir, 'AGENTS.md'), baselineInstructions: join(dir, 'evals', '.work', 'baseline.md'),
+  });
+  assert.deepEqual(suiteInstructions(c, settings), { candidate: join(dir, 'AGENTS.md'), baseline: join(dir, 'evals', '.work', 'baseline.md') });
+  assert.equal(suiteSettings(c, 'plain').subject, 'skill');
+
+  const flagged = resolveConfig({ configPath: p, cwd, flags: { instructionFile: 'cand.md', baselineInstructionFile: 'base.md' } });
+  assert.deepEqual(suiteInstructions(flagged, suiteSettings(flagged, 'guide')), { candidate: join(cwd, 'cand.md'), baseline: join(cwd, 'base.md') });
+  assert.throws(() => suiteInstructions(flagged, suiteSettings(flagged, 'plain')), /only supported by instructions suites/);
+
+  write({ guide: { subject: 'instructions', instructions: 'a.md' } });
+  assert.equal(suiteSettings(resolveConfig({ configPath: p, cwd }), 'guide').baselineInstructions, null);
+  write({ guide: { subject: 'instructions', instructions: 'a.md' } }, { instructionFile: 'env.md' });
+  const ambiguous = resolveConfig({ configPath: p, cwd });
+  assert.throws(() => suiteInstructions(ambiguous, suiteSettings(ambiguous, 'guide')), /ambiguous/);
+
+  for (const [suites, pattern] of [
+    [{ g: { subject: 'instructions' } }, /requires an "instructions" path/],
+    [{ g: { subject: 'instructions', instructions: 'a.md', skill: 'x' } }, /does not name a skill/],
+    [{ g: { subject: 'instructions', instructions: 'a.md', baselineInstructions: 3 } }, /path or null/],
+    [{ g: { instructions: 'a.md' } }, /require "subject": "instructions"/],
+    [{ g: { subject: 'rules' } }, /subject must be one of/],
+  ]) {
+    write(suites);
+    assert.throws(() => resolveConfig({ configPath: p, cwd }), pattern);
+  }
 });
