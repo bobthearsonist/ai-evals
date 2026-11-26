@@ -56,6 +56,7 @@ export function resolveAcpCredentials(client, {
   read = readFileSync,
   exec = execFileSync,
   now = Date.now(),
+  platform = process.platform,
 } = {}) {
   if (client === 'copilot') {
     const configured = env.COPILOT_GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN;
@@ -76,7 +77,21 @@ export function resolveAcpCredentials(client, {
   try {
     credentials = JSON.parse(read(join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), '.credentials.json'), 'utf8'));
   } catch {
-    throw new Error('Isolated Claude ACP requires CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or an existing .claude credential file; no login was attempted');
+    // On macOS, Claude Code keeps the same credential JSON in the login
+    // Keychain instead of a file. A custom CLAUDE_CONFIG_DIR uses a differently
+    // named entry, so only the default location is consulted.
+    if (platform === 'darwin' && !env.CLAUDE_CONFIG_DIR) {
+      try {
+        credentials = JSON.parse(exec('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        }));
+      } catch {
+        credentials = undefined;
+      }
+    }
+    if (!credentials) {
+      throw new Error('Isolated Claude ACP requires CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or an existing Claude sign-in (.claude credential file, or the macOS Keychain); no login was attempted');
+    }
   }
   const oauth = credentials.claudeAiOauth;
   if (typeof oauth?.accessToken !== 'string' || !oauth.accessToken

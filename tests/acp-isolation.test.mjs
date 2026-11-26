@@ -102,7 +102,32 @@ test('credential resolution is explicit, never logs or starts a login, and rejec
       env: {}, now: 10, read: () => JSON.stringify({ claudeAiOauth: oauth }),
     }), /missing or expired/);
   }
-  assert.throws(() => resolveAcpCredentials('claude', { env: {}, read: forbidden }), /no login was attempted/);
+  assert.throws(() => resolveAcpCredentials('claude', { env: {}, read: forbidden, exec: forbidden, platform: 'linux' }), /no login was attempted/);
+  const missingFile = () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+  const keychain = (json) => (command, args, options) => {
+    assert.equal(command, 'security');
+    assert.deepEqual(args, ['find-generic-password', '-s', 'Claude Code-credentials', '-w']);
+    assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+    return `${json}\n`;
+  };
+  assert.deepEqual(resolveAcpCredentials('claude', {
+    env: {}, now: 10, platform: 'darwin', read: missingFile,
+    exec: keychain(JSON.stringify({ claudeAiOauth: { accessToken: 'keychain', expiresAt: 11 } })),
+  }), { CLAUDE_CODE_OAUTH_TOKEN: 'keychain' }, 'macOS falls back to the Keychain sign-in');
+  assert.throws(() => resolveAcpCredentials('claude', {
+    env: {}, now: 10, platform: 'darwin', read: missingFile,
+    exec: keychain(JSON.stringify({ claudeAiOauth: { accessToken: 'stale', expiresAt: 10 } })),
+  }), /missing or expired/, 'Keychain credentials get the same expiry check');
+  assert.throws(() => resolveAcpCredentials('claude', {
+    env: {}, platform: 'darwin', read: missingFile, exec: () => { throw new Error('item not found'); },
+  }), /macOS Keychain\); no login was attempted/);
+  assert.throws(() => resolveAcpCredentials('claude', {
+    env: { CLAUDE_CONFIG_DIR: '/custom' }, platform: 'darwin', read: missingFile, exec: forbidden,
+  }), /no login was attempted/, 'a custom config dir never reads the default Keychain entry');
+  assert.deepEqual(resolveAcpCredentials('claude', {
+    env: {}, now: 10, platform: 'darwin', exec: forbidden,
+    read: () => JSON.stringify({ claudeAiOauth: { accessToken: 'file', expiresAt: 11 } }),
+  }), { CLAUDE_CODE_OAUTH_TOKEN: 'file' }, 'a credential file still wins on macOS');
   assert.deepEqual(resolveAcpCredentials('copilot', {
     env: { GH_TOKEN: 'configured' }, exec: forbidden,
   }), { COPILOT_GITHUB_TOKEN: 'configured' });
