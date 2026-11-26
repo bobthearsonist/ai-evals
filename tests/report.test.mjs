@@ -54,3 +54,26 @@ test('report grades archived checks, reports Skill calls, and optionally include
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('report grades instructions-suite archives without a skill-trigger check', () => {
+  const root = join(import.meta.dirname, 'fixtures', `.report-instructions-${process.pid}`);
+  rmSync(root, { recursive: true, force: true });
+  try {
+    mkdirSync(root, { recursive: true });
+    archivePolicy(root, [caseDefinition], { suite: 'guide', ablationSubject: 'instructions' });
+    writeFileSync(join(root, 'normalized.json'), JSON.stringify({ suite: 'guide', client: 'claude', canaryToken: 'canary', ablationSubject: 'instructions' }));
+    const traces = join(root, 'traces', 'greeting');
+    mkdirSync(traces, { recursive: true });
+    const tracePath = join(traces, 'with-1.jsonl');
+    writeFileSync(tracePath, JSON.stringify({
+      type: 'ai-evals.acp', schemaVersion: 1,
+      transcript: { finalText: 'hello there', toolCalls: [], raw: 'no skill staged', complete: true },
+    }));
+    writeFileSync(`${tracePath}.receipt.json`, JSON.stringify({ valid: true, exitCode: 0 }));
+    const [result] = reportRun(root).cases;
+    assert.deepEqual(result.checks.map(({ name, passed }) => [name, passed]), [['greeting-text', true], ['canary', true]]);
+    assert.equal(result.score, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

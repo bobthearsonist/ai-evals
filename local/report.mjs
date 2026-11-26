@@ -53,6 +53,7 @@ export function reportRun(runDir, { includeAnswer = false, parse = parseAcpTrace
       const receipt = receiptStatus(tracePath);
       const grade = gradeTranscript(caseDefinition, transcript, {
         arm: match[1], canaryToken: metadata.canaryToken, dependencySkills,
+        ablationSubject: metadata.ablationSubject ?? 'skill',
       });
       const skillCalls = skillTriggerCalls(transcript.toolCalls, dependencySkills).length;
       const definitions = new Map(caseDefinition.checks.map((check) => [check.name ?? check.pattern ?? check.type, check]));
