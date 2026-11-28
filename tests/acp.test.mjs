@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildAcpLaunch, executeAcp, validateAcpProfile } from '../local/acp.mjs';
+import { authenticationRequired, buildAcpLaunch, executeAcp, validateAcpProfile } from '../local/acp.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const fake = resolve(import.meta.dirname, 'fixtures', 'fake-acp.mjs');
@@ -295,4 +296,48 @@ test('ACP model selection handles grouped values and refuses unavailable models 
   assert.equal(unavailable.raw.some((event) => event.method === 'session/prompt'), false);
   await assertProcessStopped(grouped);
   await assertProcessStopped(unavailable);
+});
+
+test('every native execution resolves the credential again and passes it only to the child', async () => {
+  const options = buildAcpLaunch({
+    client: 'claude', cwd: root, model: 'synthetic-model', prompt: 'Synthetic credential test.', timeoutMs: 2_000,
+  });
+  const issued = [];
+  const seen = [];
+  const execute = () => executeAcp(options, {
+    // Synthetic values only; no real credential is read.
+    resolveCredentials: (client) => {
+      assert.equal(client, 'claude');
+      issued.push(`synthetic-token-${issued.length + 1}`);
+      return { CLAUDE_CODE_OAUTH_TOKEN: issued.at(-1) };
+    },
+    executeConfigured: async (launch, environment) => {
+      // Record which issued value arrived (0 for anything else), never the value.
+      seen.push({ issued: issued.indexOf(environment.CLAUDE_CODE_OAUTH_TOKEN) + 1, home: environment.HOME });
+      return { finalText: 'ok', toolCalls: [], raw: [], complete: true, errors: [] };
+    },
+  });
+  const results = [await execute(), await execute()];
+  assert.deepEqual(seen.map(({ issued: number }) => number), [1, 2]);
+  assert.notEqual(seen[0].home, seen[1].home, 'each execution gets its own temporary home');
+  for (const { home } of seen) assert.equal(existsSync(home), false, 'the temporary home is removed');
+  assert.equal(JSON.stringify(results).includes('synthetic-token'), false, 'the credential is not in the transcript');
+});
+
+test('an ACP auth_required rejection keeps its JSON-RPC code and counts as an authentication failure', async () => {
+  const rejected = await executeAcp(fakeOptions('auth-required'));
+  assert.equal(rejected.complete, false);
+  assert.equal(rejected.finalText, 'Failed to authenticate: OAuth token revoked.');
+  assert.match(rejected.errors.join('; '), /Authentication required/);
+  assert.ok(rejected.raw.some((event) => event.direction === 'error' && event.code === -32000));
+  assert.equal(authenticationRequired(rejected), true);
+
+  const errored = await executeAcp(fakeOptions('error'));
+  assert.ok(errored.raw.some((event) => event.direction === 'error' && Number.isInteger(event.code) && event.code !== -32000));
+  assert.equal(authenticationRequired(errored), false, 'other protocol errors are not authentication failures');
+  const answered = await executeAcp(fakeOptions());
+  assert.equal(authenticationRequired(answered), false);
+  await assertProcessStopped(rejected);
+  await assertProcessStopped(errored);
+  await assertProcessStopped(answered);
 });

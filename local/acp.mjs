@@ -1,10 +1,26 @@
 import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
-import { client as createClient, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { client as createClient, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { buildAcpLaunch, isBuiltAcpLaunch, validateAcpProfile } from './acp-profiles.mjs';
-import { prepareAcpEnvironment, readCopilotInstructionEvidence } from './acp-isolation.mjs';
+import { prepareAcpEnvironment, readCopilotInstructionEvidence, resolveAcpCredentials } from './acp-isolation.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+// ACP reserves JSON-RPC error -32000 for auth_required. The Claude adapter sends
+// it when the provider rejects the session's credential, for example an OAuth
+// token that was revoked while the session ran.
+const AUTH_REQUIRED_CODE = RequestError.authRequired().code;
+
+// A JSON-RPC error's numeric code classifies it, so the protocol log keeps it
+// beside the message.
+function errorCode(error) {
+  return Number.isInteger(error?.code) ? { code: error.code } : {};
+}
+
+export function authenticationRequired(transcript) {
+  return Array.isArray(transcript?.raw)
+    && transcript.raw.some((event) => event?.direction === 'error' && event.code === AUTH_REQUIRED_CODE);
+}
 
 function freezeDeep(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -127,7 +143,10 @@ export {
 };
 
 export async function executeAcp(options, {
-  prepareEnvironment = prepareAcpEnvironment,
+  resolveCredentials = resolveAcpCredentials,
+  // Resolved for every execution, never cached: Claude Code replaces its OAuth
+  // token when it refreshes, and the replaced token stops working.
+  prepareEnvironment = (client) => prepareAcpEnvironment(client, { credentials: resolveCredentials(client) }),
   executeConfigured = executeConfiguredAcp,
   captureInstructions = readCopilotInstructionEvidence,
 } = {}) {
@@ -242,7 +261,7 @@ async function executeConfiguredAcp(options, environment) {
         record(raw, { direction: 'in', method, result: response });
         return response;
       } catch (error) {
-        record(raw, { direction: 'error', method, message: asError(error).message });
+        record(raw, { direction: 'error', method, message: asError(error).message, ...errorCode(error) });
         throw error;
       }
     };
@@ -343,7 +362,7 @@ async function executeConfiguredAcp(options, environment) {
   } catch (error) {
     const protocolError = asError(error);
     errors.push(protocolError);
-    record(raw, { direction: 'error', phase: 'protocol', message: protocolError.message });
+    record(raw, { direction: 'error', phase: 'protocol', message: protocolError.message, ...errorCode(error) });
   } finally {
     clearTimeout(timer);
     stoppedByTransport = await terminateChild(child, closePromise);
