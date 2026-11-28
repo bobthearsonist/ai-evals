@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { executeAcp } from './acp.mjs';
+import { authenticationRequired, executeAcp } from './acp.mjs';
 import { buildAcpLaunch } from './acp-profiles.mjs';
 import { checkAcpRuntime } from './acp-isolation.mjs';
 import { CLIENT_STATUS, makeRunResult, registerRunner, validateCapabilities, validateCase } from './contract.mjs';
@@ -71,8 +71,10 @@ function reportedUsdCost(usage) {
     && Number.isFinite(cost.amount) ? cost.amount : null;
 }
 
+// Includes a session's rejected first attempt, which may have incurred cost.
 function sumReportedUsdCosts(receipts) {
-  const costs = receipts.map((receipt) => reportedUsdCost(receipt.usage)).filter((cost) => cost !== null);
+  const costs = receipts.flatMap((receipt) => [receipt.usage, receipt.authRetry?.usage])
+    .map(reportedUsdCost).filter((cost) => cost !== null);
   return costs.length ? costs.reduce((total, cost) => total + cost, 0) : null;
 }
 
@@ -105,7 +107,9 @@ export function parseAcpTrace(text) {
 }
 
 // A custom profile is explicit operator configuration, never verified native isolation.
-export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaunch, execute = executeAcp, cleanup = removeTemporaryDirectory } = {}) {
+export function createAcpRunner({
+  client, exe, acpProfile, launch = buildAcpLaunch, execute = executeAcp, cleanup = removeTemporaryDirectory, checkRuntime = checkAcpRuntime,
+} = {}) {
   if (!['claude', 'copilot', 'opencode'].includes(client)) throw new Error('unsupported ACP client');
   if (acpProfile !== undefined) {
     if (!acpProfile || typeof acpProfile !== 'object' || Array.isArray(acpProfile)
@@ -135,7 +139,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           client, mode: 'candidate', model, cwd: process.cwd(),
           prompt: 'ACP capability preflight; this prompt is never executed.',
           timeoutMs: timeoutSeconds * 1000, ...(exe ? { command: exe } : {}),
-        }); authentication = checkAcpRuntime(launchOptions).authentication; }
+        }); authentication = checkRuntime(launchOptions).authentication; }
         catch (error) { problems.push(error.message); }
       }
       return {
@@ -188,6 +192,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       const jobs = [];
       for (const c of selected) for (let repeat = 1; repeat <= runs; repeat++) for (const arm of arms) jobs.push({ c, repeat, arm });
       let sessions = 0;
+      let authRetries = 0;
       let stopReason = null;
       // A job owns its workspace, isolated home and trace path, so jobs share
       // nothing but the counters above and can run side by side.
@@ -198,6 +203,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
         const path = join(dir, `${arm}-${repeat}.jsonl`);
         const receipt = { caseId: c.id, arm, repeat, started: false, valid: false, exitCode: null, error: null, canaryTouched: null };
         let stop = null;
+        let rejected = null;
         try {
           // A real repository boundary prevents parent-directory configuration
           // discovery even when the caller's temp directory is inside a repo.
@@ -221,8 +227,24 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           });
           receipt.started = true;
           sessions++;
-          const captured = await execute(launchOptions);
-          writeFileSync(path, JSON.stringify({ type: 'ai-evals.acp', schemaVersion: 1, transcript: captured }) + '\n', { flag: 'wx' });
+          let captured = await execute(launchOptions);
+          if (authenticationRequired(captured) && !captured.cleanupError) {
+            // A rejected credential is an infrastructure fault: the agent stops
+            // without a gradeable answer, so a second start cannot pick a better
+            // score. Claude Code can revoke a session's OAuth token mid-run when
+            // it refreshes, and every execution resolves the credential again.
+            // Only one retry; the rejected attempt stays in the trace archive.
+            rejected = captured;
+            receipt.authRetry = {
+              error: captured.errors?.join('; ') || 'ACP authentication required',
+              usage: usageWithRawEvidence(captured) ?? null,
+            };
+            authRetries++;
+            captured = await execute(launchOptions);
+          }
+          writeFileSync(path, JSON.stringify({
+            type: 'ai-evals.acp', schemaVersion: 1, transcript: captured, ...(rejected ? { authRetry: { transcript: rejected } } : {}),
+          }) + '\n', { flag: 'wx' });
           const transcript = gradingTranscript(captured);
           receipt.usage = transcript.usage ?? null;
           receipt.complete = transcript.complete;
@@ -249,6 +271,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           if (!existsSync(path)) writeFileSync(path, JSON.stringify({
             type: 'ai-evals.acp', schemaVersion: 1,
             transcript: { finalText: '', toolCalls: [], raw: '', complete: false, errors: [receipt.error] },
+            ...(rejected ? { authRetry: { transcript: rejected } } : {}),
           }) + '\n', { flag: 'wx' });
           writeFileSync(`${path}.receipt.json`, JSON.stringify(receipt, null, 2), { flag: 'wx' });
         }
@@ -307,6 +330,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
         caveats: [
           ...base.caveats,
           ...(canaryTouched === null ? ['Canary leak check was inconclusive for at least one execution.'] : []),
+          ...(authRetries ? [`${authRetries} session(s) started once more after the agent reported an authentication failure; see authRetry in their receipts.`] : []),
           ...(stopReason ? [stopReason] : []),
         ],
       });

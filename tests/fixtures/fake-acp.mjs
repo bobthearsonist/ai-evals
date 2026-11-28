@@ -1,4 +1,4 @@
-import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import { appendFileSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 
@@ -51,6 +51,14 @@ app.onRequest(methods.agent.session.prompt, async ({ params, client }) => {
   logPrompt('start');
   if (holdMs > 0) await new Promise((resolve) => setTimeout(resolve, holdMs));
   if (mode === 'error') throw new Error('synthetic ACP error');
+  if (mode === 'auth-required') {
+    // Mirrors the Claude adapter when the provider rejects a revoked OAuth token.
+    await client.notify(methods.client.session.update, {
+      sessionId: params.sessionId,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Failed to authenticate: OAuth token revoked.' } },
+    });
+    throw RequestError.authRequired();
+  }
   if (mode === 'timeout') {
     await new Promise((resolve) => {
       const timer = setTimeout(resolve, 10_000);

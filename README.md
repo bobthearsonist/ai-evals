@@ -402,7 +402,13 @@ availability. It does not authenticate with a provider or make an inference call
 stable-v1 ACP client. There is no `--transport` option. It records
 messages, tool events, completion and observed usage,
 denies permission requests by default, and stops on errors/timeouts without
-retries. Missing usage/cost is `null`, not zero. ACP does not provide an OS
+retries, with one exception: a session whose agent reports ACP `auth_required`
+(JSON-RPC error -32000) is started once more. The agent stops without a gradeable
+answer in that case, so the retry cannot pick a better score; it covers a
+credential replaced mid-run (see below). The rejected attempt stays in the trace
+under `authRetry` and in the receipt, its reported cost is counted, and the run's
+caveats give the number of retried sessions. Each retry starts one session beyond
+the approved count. Missing usage/cost is `null`, not zero. ACP does not provide an OS
 sandbox, prove that ambient MCP/configuration is disabled, or enforce a
 hard spend cap; spend-cap flags are rejected for this transport.
 Native launch profiles must verify the required isolation controls before
@@ -434,6 +440,10 @@ Claude uses an existing `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or
 unexpired local Claude OAuth credential; Copilot uses an existing
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
 No login, token refresh, API billing substitution or fallback is attempted.
+The credential is resolved again for every session, never cached for a run:
+Claude Code replaces its OAuth token when it refreshes, and the replaced token
+stops working, even for a session already running. A later session picks up the
+replacement, and a session rejected mid-run gets the one retry described above.
 The native protocol must confirm the pinned agent version and requested model
 before receiving a prompt. These controls have offline coverage, **not live
 native ACP acceptance**. Historical SDK smoke acceptance is not ACP acceptance.
