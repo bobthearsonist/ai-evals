@@ -151,7 +151,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       const {
         skillName, skillSnapshot, fixtureSnapshot, instructionSnapshot, baselineInstructionSnapshot = null,
         ablationSubject = 'skill', canaryToken, outputDir, model,
-        runs, ablation, caseId, timeoutSeconds = 120, dependencies = [],
+        runs, ablation, caseId, timeoutSeconds = 120, dependencies = [], concurrency = 1,
       } = options;
       if (!['skill', 'instructions'].includes(ablationSubject)) throw new Error('invalid ablation subject');
       if (ablationSubject === 'instructions' && (!instructionSnapshot || skillSnapshot || dependencies.length)) {
@@ -162,6 +162,7 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       const armInstructions = (arm) => ablationSubject === 'instructions' && arm === 'without' ? baselineInstructionSnapshot : instructionSnapshot;
       const armSkill = (arm) => ablationSubject === 'skill' && arm === 'with';
       if (!Number.isInteger(runs) || runs < 1 || !['none', 'with-without'].includes(ablation)) throw new Error('invalid ACP schedule');
+      if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('ACP concurrency must be an integer from 1 to 8');
       const dependencySkills = dependencies.map((dependency) => dependency.name);
       if (dependencySkills.includes(skillName)) throw new Error(`skill "${skillName}" cannot be staged as its own dependency`);
       const selected = suite.filter((c) => !caseId || c.id === caseId);
@@ -183,15 +184,20 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
       const preflight = await this.preflight({ model, timeoutSeconds });
       if (!preflight.ok) return makeRunResult({ ...base, status: CLIENT_STATUS.ERROR, caveats: [...base.caveats, ...preflight.problems] });
       mkdirSync(outputDir, { recursive: true });
-      const receipts = [];
+      const arms = ablation === 'with-without' ? ['with', 'without'] : ['with'];
+      const jobs = [];
+      for (const c of selected) for (let repeat = 1; repeat <= runs; repeat++) for (const arm of arms) jobs.push({ c, repeat, arm });
       let sessions = 0;
       let stopReason = null;
-      jobs: for (const c of selected) for (let repeat = 1; repeat <= runs; repeat++) for (const arm of ablation === 'with-without' ? ['with', 'without'] : ['with']) {
+      // A job owns its workspace, isolated home and trace path, so jobs share
+      // nothing but the counters above and can run side by side.
+      const runJob = async ({ c, repeat, arm }) => {
         const workspace = mkdtempSync(join(tmpdir(), 'ai-evals-acp-workspace-'));
         const dir = join(dirname(outputDir), 'traces', c.id);
         mkdirSync(dir, { recursive: true });
         const path = join(dir, `${arm}-${repeat}.jsonl`);
         const receipt = { caseId: c.id, arm, repeat, started: false, valid: false, exitCode: null, error: null, canaryTouched: null };
+        let stop = null;
         try {
           // A real repository boundary prevents parent-directory configuration
           // discovery even when the caller's temp directory is inside a repo.
@@ -230,25 +236,48 @@ export function createAcpRunner({ client, exe, acpProfile, launch = buildAcpLaun
           receipt.valid = true;
           if (captured.cleanupError) {
             receipt.cleanupError = `isolated-home cleanup failed: ${captured.cleanupError}`;
-            stopReason = receipt.cleanupError;
+            stop = receipt.cleanupError;
           }
         } catch (error) {
           receipt.error = error.message;
-          stopReason = error.message;
+          stop = error.message;
         } finally {
           try { cleanup(workspace); } catch (error) {
             receipt.cleanupError = error.message;
-            stopReason = `workspace cleanup failed: ${error.message}`;
+            stop = `workspace cleanup failed: ${error.message}`;
           }
           if (!existsSync(path)) writeFileSync(path, JSON.stringify({
             type: 'ai-evals.acp', schemaVersion: 1,
             transcript: { finalText: '', toolCalls: [], raw: '', complete: false, errors: [receipt.error] },
           }) + '\n', { flag: 'wx' });
           writeFileSync(`${path}.receipt.json`, JSON.stringify(receipt, null, 2), { flag: 'wx' });
-          receipts.push(receipt);
         }
-        if (stopReason) break jobs;
-      }
+        return { receipt, stop };
+      };
+      // Workers take jobs in case, repeat, arm order. After the first failure no
+      // new job starts; jobs already in flight finish and archive their receipts.
+      // An unexpected exception is rethrown once the in-flight jobs have settled.
+      const finished = new Array(jobs.length);
+      let next = 0;
+      let crashed = false;
+      let crash;
+      const worker = async () => {
+        while (!stopReason && !crashed && next < jobs.length) {
+          const index = next++;
+          try {
+            const { receipt, stop } = await runJob(jobs[index]);
+            finished[index] = receipt;
+            if (stop && !stopReason) stopReason = stop;
+          } catch (error) {
+            if (!crashed) { crashed = true; crash = error; }
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
+      if (crashed) throw crash;
+      // Indexed by job, so results keep the schedule order whatever order the
+      // sessions finished in.
+      const receipts = finished.filter(Boolean);
       const cases = selected.map((c) => {
         const records = receipts.filter((r) => r.caseId === c.id);
         const expected = runs * (ablation === 'with-without' ? 2 : 1);
