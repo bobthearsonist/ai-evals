@@ -140,7 +140,11 @@ commands use concise human output by default; add `--json` for the complete
 machine-readable result. `run-all` discovers configured suites (or case folders)
 and prints the required session approval before doing paid work. A three-case,
 three-repeat, with/without suite plans 18 sessions. `--concurrency` bounds
-sessions in flight (1-8); the current ACP runner executes serially. Suite/runner pairs run serially, so this is a global
+ACP sessions in flight (1-8; `run` and `smoke` default to 1, `run-all` to 4).
+Each session has its own workspace, temporary home and trace file, and results
+keep case, repeat and arm order whatever order sessions finish in. After the
+first failure no new session starts; sessions already in flight finish and are
+archived. Suite/runner pairs run serially, so this is a global
 ceiling rather than a multiplier per suite or runner.
 An alternate `ai-evals-all` binary exposes `run-all` directly.
 
@@ -460,8 +464,9 @@ usage/configuration/approval error. Human-readable errors use the `error:`
 prefix. `--json` emits complete result objects where applicable. Dry runs report
 `"transport": "acp"` without authentication or inference.
 `--max-cost-usd`, `--max-ai-credits` and legacy `--copilot-home` are refused
-instead of silently ignored. The current runner is serial even with a higher
-concurrency ceiling. Tool/trace evidence is available, skill-discovery evidence
+instead of silently ignored. A higher `--concurrency` finishes sooner but makes
+provider rate limits more likely; a session that fails on a rate limit stops the
+run like any other failure. Tool/trace evidence is available, skill-discovery evidence
 and filesystem snapshots are not verified; v2 filesystem checks refuse before
 execution. Fixture reads explicitly refused without any successful read are
 invalid execution evidence, not model-quality failures.
