@@ -34,6 +34,15 @@ The npm package is `@bobthearsonist/ai-evals`; the executable is `ai-evals`.
 It is installed from Git, not published to the npm registry. For development,
 clone the repository and invoke `node <checkout>\local\cli.mjs`.
 
+npm records the dependency in the consumer's `package-lock.json` as
+`git+ssh://git@github.com/...`, even when `package.json` uses HTTPS. Where no
+SSH key is available, such as a hosted CI runner, rewrite GitHub SSH URLs before
+`npm ci`, for example with
+`git config --global url."https://github.com/".insteadOf ssh://git@github.com/`.
+npm ignores a dependency's own lockfile: the engine's dependencies resolve in
+each consumer's lockfile, so run `npm audit` there; fixes to this repository's
+lockfile do not reach consumers.
+
 `tests/fixtures` contains only a synthetic `demo` greeting skill and cases used
 to test the engine. These fixtures are excluded from the installed package.
 Real skill suites stay in their respective consuming repositories.
@@ -134,8 +143,9 @@ API IDs. The pinned Claude adapter exposes Haiku 5.5 as `haiku`; Copilot exposes
 it as `claude-haiku-5.5`. The requested value must be confirmed before prompting;
 an unavailable model fails rather than falling back to a default.
 
-`run` requires `--suite`. `smoke` accepts repeatable `--case ID` options and
-archives the selected cases in one run directory. `validate`, `smoke`, and dry-run
+`run` requires `--suite` and accepts one `--case ID`. `smoke` accepts repeatable
+`--case ID` options and archives the selected cases in one run directory.
+`validate`, `smoke`, and dry-run
 commands use concise human output by default; add `--json` for the complete
 machine-readable result. `run-all` discovers configured suites (or case folders)
 and prints the required session approval before doing paid work. A three-case,
@@ -367,11 +377,30 @@ Clients and models never overwrite or compare one another's latest results.
 Historical non-ACP results are left untouched but cannot be replayed or judged
 by this engine.
 
+A run that stops early, for example at a plan usage limit or on a rejected
+credential, still archives the sessions that finished and prints a summary.
+`normalized.json` then has `status: "partial"` (`"error"` if no session
+started), with the cause in `caveats` and in each affected case's
+`partialReason`; `run` and `smoke` print the cause only with `--json`. The exit
+code does not distinguish this: any failed with-arm check already makes the
+status `below_threshold` and the exit code `1`.
+
 Case verdicts are `same` (absolute mean delta below 0.05), `lift` (all with
 scores exceed all without scores), `regression` (reverse), `inconclusive`
 (overlap), or `unmeasured` (missing arm). These are descriptive, not statistical
 significance tests. Three repeats provide only a limited view of variance.
 Runs without a final result are excluded and counted as invalid.
+
+A trace's score is the fraction of its checks that pass, including the added
+`canary` check (the run's canary token must not appear in the trace) and, in
+skill suites, a `skill-trigger` check (the with arm of a `@should-trigger` case
+must call the skill; neither arm of a `@should-not-trigger` case may). A `lift`
+can therefore come from the skill loading alone while every content check fails
+in both arms; read the per-check results with `report RUN_DIR` and judge the
+skill on its content checks. To gate automatically, fail on `regression`
+verdicts, invalid runs and `unmeasured` cases rather than on mean differences:
+with three repeats, identical instruction files in both arms can still differ by
+more than 0.05 and come out `inconclusive`.
 
 ```powershell
 npx --no-install ai-evals regrade evals/.work/local-runs/<run> --config evals/evals.json --suite my-suite
@@ -436,8 +465,13 @@ credentials only in the child environment. No credential file is copied.
 Claude refuses active machine-managed settings rather than bypassing policy.
 OpenCode remains unsupported by standard entrypoints.
 
-Claude uses an existing `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or
-unexpired local Claude OAuth credential; Copilot uses an existing
+Claude uses `CLAUDE_CODE_OAUTH_TOKEN`, else `ANTHROPIC_API_KEY`, else the
+unexpired Claude Code sign-in: `.credentials.json` in `CLAUDE_CONFIG_DIR`
+(default `~/.claude`) or, on macOS when that file cannot be read and
+`CLAUDE_CONFIG_DIR` is unset, the login Keychain item `Claude Code-credentials`.
+A local run therefore needs no exported token; refresh an expired sign-in in
+Claude Code first. A subscription sign-in or OAuth token shares its plan usage
+limits with any other Claude Code use on that account. Copilot uses an existing
 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
 No login, token refresh, API billing substitution or fallback is attempted.
 The credential is resolved again for every session, never cached for a run:
